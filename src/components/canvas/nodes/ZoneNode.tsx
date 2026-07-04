@@ -1,6 +1,6 @@
 import { Handle, NodeResizer, Position, type Node, type NodeProps } from '@xyflow/react';
 import { fmtNum } from '../../../game/engine/balance';
-import type { NodeKind } from '../../../game/engine/types';
+import { PORT_WORD, type NodeKind } from '../../../game/engine/types';
 import { CATEGORY_INFO, SPECS, specOf } from '../../../game/catalog/nodes';
 import { useGame } from '../../../game/state/store';
 import { zoneHasController } from '../../../game/systems/zoning';
@@ -90,7 +90,7 @@ export default function ZoneNode({ id, data, selected }: NodeProps<ZoneNodeType>
           position={Position.Left}
           className={`port-${p.type}`}
           style={{ top: 44 + i * 26 }}
-          title={`${p.label} (${p.type})`}
+          title={`in · ${p.label} (${PORT_WORD[p.type]})`}
         />
       ))}
       {outs.map((p, i) => (
@@ -101,7 +101,7 @@ export default function ZoneNode({ id, data, selected }: NodeProps<ZoneNodeType>
           position={Position.Right}
           className={`port-${p.type}`}
           style={{ top: 44 + i * 26 }}
-          title={`${p.label} (${p.type})`}
+          title={`out · ${p.label} (${PORT_WORD[p.type]})`}
         />
       ))}
 

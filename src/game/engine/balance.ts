@@ -68,7 +68,7 @@ export const BAL = {
   rpPerPromLevel: 0.03,
   grafanaRpMult: 1.5,
   obs2RpMult: 1.4,
-  datadogRpWeight: 1.75, // Datadog samples better than self-hosted Prometheus — for a SaaS bill
+  datadogRpWeight: 2, // Datadog samples 2× better than self-hosted Prometheus — for a SaaS bill
 
   // --- upgrades --------------------------------------------------------------
   capPerLevel: 1.65, // capacity multiplier per level above 1

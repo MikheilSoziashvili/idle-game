@@ -320,6 +320,7 @@ let toastId = 1;
 export function portTypeOf(handle: string): PortType {
   const prefix = handle.split('-')[0];
   if (prefix === 'ctl') return 'control';
+  if (prefix === 'repl') return 'data'; // legacy handle ids from before the merge
   return prefix as PortType;
 }
 

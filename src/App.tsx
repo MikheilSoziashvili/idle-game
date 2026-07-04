@@ -143,6 +143,7 @@ export default function App() {
         <BlueprintBar />
         <LessonCard />
         <PostmortemCard />
+        <TutorialCard />
         <Toasts />
         <Modals />
       </main>

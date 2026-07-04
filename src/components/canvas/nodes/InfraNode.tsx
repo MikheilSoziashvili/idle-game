@@ -1,6 +1,6 @@
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import { BAL, fmtNum, masteryTier } from '../../../game/engine/balance';
-import type { NodeKind } from '../../../game/engine/types';
+import { PORT_WORD, type NodeKind } from '../../../game/engine/types';
 import { CATEGORY_INFO, SPECS } from '../../../game/catalog/nodes';
 import { useGame } from '../../../game/state/store';
 import { overlayValue, rampColor } from '../../../game/systems/overlays';
@@ -145,7 +145,7 @@ export default function InfraNode({ id, data, selected }: NodeProps<InfraNodeTyp
           position={Position.Left}
           className={`port-${p.type}`}
           style={{ top: 34 + i * 22 }}
-          title={`${p.label} (${p.type})`}
+          title={`in · ${p.label} (${PORT_WORD[p.type]})`}
         />
       ))}
       {outs.map((p, i) => (
@@ -156,7 +156,7 @@ export default function InfraNode({ id, data, selected }: NodeProps<InfraNodeTyp
           position={Position.Right}
           className={`port-${p.type}`}
           style={{ top: 34 + i * 22 }}
-          title={`${p.label} (${p.type})`}
+          title={`out · ${p.label} (${PORT_WORD[p.type]})`}
         />
       ))}
 

@@ -7,6 +7,7 @@ export default function Objectives() {
   const sandbox = useGame((s) => s.sandbox);
   const caseId = useGame((s) => s.caseId);
   const tool = useGame((s) => s.tool);
+  const tutPulse = useGame((s) => s.tutorialStep === 5);
   const [collapsed, setCollapsed] = useState(false);
 
   if (sandbox || caseId) return null; // CaseHud owns this corner during cases
@@ -18,7 +19,7 @@ export default function Objectives() {
   const visible = MILESTONES.slice(Math.max(0, firstOpenIdx - 1), firstOpenIdx + 2);
 
   return (
-    <div className={`objectives ${tool === 'zone' ? 'shift-down' : ''}`}>
+    <div className={`objectives ${tool === 'zone' ? 'shift-down' : ''} ${tutPulse ? 'tut-pulse' : ''}`}>
       <div className="panel-head" style={{ cursor: 'pointer', borderBottom: collapsed ? 'none' : undefined }} onClick={() => setCollapsed(!collapsed)}>
         <span>
           Objectives {done.length}/{MILESTONES.length}

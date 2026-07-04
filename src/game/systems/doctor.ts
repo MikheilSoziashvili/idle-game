@@ -47,7 +47,7 @@ export function diagnose(st: GameStore): Finding[] {
         title: `${nameOf(n)} at ${Math.round(s.util * 100)}% — the latency knee is near`,
         detail: 'Past ~85% utilization queue wait explodes (util³). Real teams scale at 60–75%.',
         fix: isDb
-          ? `Shield it: a cache absorbs ~80% of reads (Redis ${fmtMoney(SPECS.redis.cost)}), replicas fan the rest out.`
+          ? `Shield it: a cache absorbs ~85% of reads (Redis ${fmtMoney(SPECS.redis.cost)}), replicas fan the rest out.`
           : 'Add capacity now, while it is cheap boredom instead of an incident.',
       });
     }
@@ -62,7 +62,7 @@ export function diagnose(st: GameStore): Finding[] {
       severity: 'warn',
       title: `${nameOf(hotDb)} takes every read raw`,
       detail: 'Most database load is usually cacheable reads — the cheapest capacity you can buy.',
-      fix: `App → Redis → ${nameOf(hotDb)}: ~80% of reads never touch the primary (${fmtMoney(SPECS.redis.cost)}).`,
+      fix: `App → Redis → ${nameOf(hotDb)}: ~85% of reads never touch the primary (${fmtMoney(SPECS.redis.cost)}).`,
     });
   }
 

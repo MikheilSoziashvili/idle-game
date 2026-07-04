@@ -1,15 +1,16 @@
 import { CATEGORY_INFO, SPECS, specOf } from '../catalog/nodes';
 import type { GameStore } from '../state/store';
-import type { PortType } from '../engine/types';
+import { PORT_WORD, type PortType } from '../engine/types';
 
 // Photo mode: render the current graph as a clean, self-contained SVG
 // architecture diagram and download it. Doubles as a system-design sketch.
 
-const PORT_COLORS: Record<PortType, string> = {
+// keyed loosely: legacy 'repl-*' handles from old saves still hit this map
+const PORT_COLORS: Record<string, string> = {
   http: '#2f6feb',
   data: '#a78bfa',
   jobs: '#34d1bf',
-  repl: '#d4682f',
+  repl: '#a78bfa',
   control: '#39c5cf',
 };
 
@@ -57,7 +58,8 @@ export function buildArchitectureSvg(st: GameStore): string {
     const y1 = ab.y + ab.h / 2;
     const x2 = bb.x;
     const y2 = bb.y + bb.h / 2;
-    const type = (e.sourceHandle.split('-')[0] === 'ctl' ? 'control' : e.sourceHandle.split('-')[0]) as PortType;
+    const prefix = e.sourceHandle.split('-')[0];
+    const type = prefix === 'ctl' ? 'control' : prefix; // 'repl' = legacy replication handles
     const c = PORT_COLORS[type] ?? '#888';
     const mx = (x1 + x2) / 2;
     const dash = type === 'control' || type === 'repl' ? ' stroke-dasharray="4 5"' : '';
@@ -89,10 +91,10 @@ export function buildArchitectureSvg(st: GameStore): string {
   const ly = maxY - 66;
   parts.push(`<text x="${lx}" y="${ly - 10}" font-size="10" fill="#66788c">wires:</text>`);
   let off = 0;
-  for (const [t, c] of Object.entries(PORT_COLORS)) {
+  for (const t of ['http', 'data', 'jobs', 'control'] as PortType[]) {
     parts.push(
-      `<line x1="${lx + off}" y1="${ly + 6}" x2="${lx + off + 26}" y2="${ly + 6}" stroke="${c}" stroke-width="2.5"/>`,
-      `<text x="${lx + off + 32}" y="${ly + 10}" font-size="10" fill="#43536b">${t}</text>`,
+      `<line x1="${lx + off}" y1="${ly + 6}" x2="${lx + off + 26}" y2="${ly + 6}" stroke="${PORT_COLORS[t]}" stroke-width="2.5"/>`,
+      `<text x="${lx + off + 32}" y="${ly + 10}" font-size="10" fill="#43536b">${PORT_WORD[t]}</text>`,
     );
     off += 92;
   }

@@ -102,7 +102,7 @@ export const RESEARCH: ResearchDef[] = [
     desc: 'Buy, don\'t build: trade dollars for operations. Unlocks SQS (bottomless managed queue) and Datadog (premium RP).',
     cost: 120,
     deps: [],
-    grants: ['Unlocks SQS', 'Unlocks Datadog (+75% RP weight)'],
+    grants: ['Unlocks SQS', 'Unlocks Datadog (2× RP weight)'],
   },
   {
     id: 'serverless',

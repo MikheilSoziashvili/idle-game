@@ -297,6 +297,21 @@
   padding: 6px;
   flex: 1;
 }
+.port-legend {
+  display: flex;
+  gap: 10px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: 9.5px;
+  color: var(--faint);
+  font-family: var(--mono);
+}
+.port-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.port-legend .dot { width: 7px; height: 7px; border-radius: 2px; display: inline-block; }
+.port-legend .dot-http { background: var(--port-http); }
+.port-legend .dot-data { background: var(--port-data); }
+.port-legend .dot-jobs { background: var(--port-jobs); }
+.port-legend .dot-control { background: var(--port-control); border-radius: 50%; }
 .pal-cat {
   margin: 7px 4px 3px;
   font-size: 9.5px;
@@ -1111,6 +1126,49 @@
 
 /* postmortem card accent */
 .lesson-card.postmortem { border-left: 3px solid var(--bad); }
+
+/* ---------------- interactive tutorial ---------------- */
+.lesson-card.tutorial { border-left: 3px solid var(--accent); z-index: 26; }
+.tut-dots { display: inline-flex; gap: 4px; margin-left: auto; align-items: center; }
+.tut-dots i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  border: 1px solid var(--line-bright);
+}
+.tut-dots i.past { background: color-mix(in srgb, var(--accent) 35%, transparent); border-color: transparent; }
+.tut-dots i.on { background: var(--accent); border-color: var(--accent); transform: scale(1.25); }
+.tut-hint {
+  margin-top: 6px !important;
+  font-family: var(--mono);
+  font-size: 10.5px !important;
+  color: var(--accent) !important;
+}
+.tut-skip { font-size: 10px; color: var(--faint); }
+.tut-wait {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--accent);
+  animation: tutWait 1.4s ease-in-out infinite;
+}
+@keyframes tutWait {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+/* pulsing anchor: points the player at the UI element the step needs */
+.tut-pulse {
+  animation: tutPulse 1.5s ease-in-out infinite;
+  border-radius: 8px;
+}
+@keyframes tutPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(47, 111, 235, 0.55); }
+  50% { box-shadow: 0 0 0 6px rgba(47, 111, 235, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tut-pulse, .tut-wait { animation: none; }
+}
 
 /* real-world documentation link under the field manual */
 .insp-docs {

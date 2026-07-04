@@ -1,5 +1,5 @@
 import { BAL } from '../engine/balance';
-import type { Blueprint } from '../engine/types';
+import type { Blueprint, PlacedEdge } from '../engine/types';
 import type { CaseDef } from '../catalog/casestudies';
 import type { GameStore } from './store';
 import { emptyStats, useGame } from './store';
@@ -126,6 +126,16 @@ function applyBlob(blob: SaveBlob) {
   // stats gained fields over time — old saves get the missing shape backfilled
   partial.stats = { ...emptyStats(), ...(partial.stats ?? {}) };
   partial.blueprints = Array.isArray(blob.blueprints) ? blob.blueprints : [];
+  // migrate pre-merge saves: the replica's dedicated 'repl-in' port became 'data-in'
+  if (Array.isArray(partial.edges)) {
+    partial.edges = (partial.edges as PlacedEdge[]).map((e) =>
+      e.targetHandle === 'repl-in' ? { ...e, targetHandle: 'data-in' } : e,
+    );
+  }
+  partial.blueprints = partial.blueprints.map((bp) => ({
+    ...bp,
+    edges: bp.edges.map((be) => (be.th === 'repl-in' ? { ...be, th: 'data-in' } : be)),
+  }));
   partial.lastSaved = blob.savedAt;
   useGame.getState().loadState(partial);
 }

@@ -36,7 +36,7 @@ function whyText(key: string, g: ReturnType<typeof useGame.getState>['live']['ga
     case 'rp':
       return [
         `Metrics nodes sample served traffic: rp/s = ${BAL.rpBase}·√served·√Σweight + ${BAL.rpPerPromLevel}·Σ(level·weight).`,
-        'Datadog samples at 1.75× weight; Grafana ×1.5, Distributed Tracing ×1.4 on top.',
+        'Datadog samples at 2× weight; Grafana ×1.5, Distributed Tracing ×1.4 on top.',
         'Contracts, drills, missions and milestones pay lump sums.',
       ];
     default:
@@ -83,6 +83,7 @@ export default function Dashboard() {
   const today = new Date().toISOString().slice(0, 10);
   const drillRunning = drill.activeUntil > simTime;
   const drillAvailable = !sandbox && !caseId && !drillRunning && drill.lastDay !== today;
+  const tutGauges = useGame((s) => s.tutorialStep === 3);
 
   const gaugeWhy = (key: string) => (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -133,7 +134,7 @@ export default function Dashboard() {
         </span>
       </div>
 
-      <div className="gauges">
+      <div className={`gauges ${tutGauges ? 'tut-pulse' : ''}`}>
         <div
           className={`gauge ${dropShare > 0.02 ? 'glow-bad' : 'glow-ok'}`}
           title="Throughput. Click for the why."

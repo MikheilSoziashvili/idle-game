@@ -646,6 +646,21 @@ function SettingsPanel() {
       </div>
       <div className="settings-row">
         <span>
+          Tutorial
+          <small>Replay the interactive walkthrough of the core loop</small>
+        </span>
+        <span className="spacer" />
+        <button
+          onClick={() => {
+            useGame.getState().setTutorialStep(0);
+            useGame.getState().openModal(null);
+          }}
+        >
+          Replay tutorial
+        </button>
+      </div>
+      <div className="settings-row">
+        <span>
           Save now
           <small>Also exports below</small>
         </span>
@@ -808,8 +823,8 @@ function HelpPanel() {
       <div>
         <h4>Architecture cheatsheet</h4>
         <ul>
-          <li>Ports are typed by color: http, data, jobs, control. Like connects to like.</li>
-          <li>Redis in front of Postgres: 80% of reads never touch the DB.</li>
+          <li>Four wire types: web, storage, jobs, control (see the palette legend). Like connects to like — wire mode matches ports for you.</li>
+          <li>Redis in front of Postgres: 85% of reads never touch the DB.</li>
           <li>CDN + S3 serves static for pennies at the edge.</li>
           <li>Kafka + workers absorb spikes you'd otherwise provision for.</li>
           <li>Load balancers split by headroom; raw DNS (Internet fan-out) splits blindly.</li>

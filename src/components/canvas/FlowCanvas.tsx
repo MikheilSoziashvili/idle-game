@@ -24,7 +24,7 @@ import RegionNode, { type RegionData } from './nodes/RegionNode';
 import PacketEdge from './edges/PacketEdge';
 import { handlesOf, useGame } from '../../game/state/store';
 import { CATEGORY_INFO, SPECS, specOf } from '../../game/catalog/nodes';
-import type { NodeKind } from '../../game/engine/types';
+import { PORT_WORD, type NodeKind } from '../../game/engine/types';
 import { STARTER_BLUEPRINTS } from '../../game/catalog/blueprints';
 import { computeAutoLayout, alignmentGuides } from '../../game/engine/layout';
 import { BAL, fmtMoney, fmtNum } from '../../game/engine/balance';
@@ -224,7 +224,10 @@ function CanvasInner() {
             const pair = bestPortPair(srcId, node.id);
             if (pair && s.connectPorts(pair)) made++;
           }
-          if (made === 0) s.addToast('warn', 'No compatible ports', 'Check the port colors: http↔http, data↔data, jobs↔jobs.');
+          if (made === 0) {
+            const [title, body] = mismatchAdvice(wireFrom, node.id);
+            s.addToast('warn', title, body);
+          }
           setWireFrom(null);
         } else {
           setWireFrom(null);
@@ -529,6 +532,34 @@ function rectFromClients(wrap: HTMLElement, x1: number, y1: number, x2: number, 
     w: Math.abs(x1 - x2),
     h: Math.abs(y1 - y2),
   };
+}
+
+/**
+ * When no ports match, say WHY in plain words and suggest the intermediary —
+ * the type system is a teacher, so the error should teach too.
+ */
+function mismatchAdvice(srcId: string, tgtId: string): [string, string] {
+  const s = useGame.getState();
+  const src = s.nodes.find((n) => n.id === srcId);
+  const tgt = s.nodes.find((n) => n.id === tgtId);
+  if (!src || !tgt) return ['No compatible ports', 'One of the nodes is gone.'];
+  const outs = new Set(handlesOf(src).filter((h) => h.dir === 'out').map((h) => h.type));
+  const ins = new Set(handlesOf(tgt).filter((h) => h.dir === 'in').map((h) => h.type));
+  const srcName = src.label ?? specOf(src.kind, src.zone?.template).name;
+  const tgtName = tgt.label ?? specOf(tgt.kind, tgt.zone?.template).name;
+  const word = (set: Set<string>) => [...set].map((t) => PORT_WORD[t as keyof typeof PORT_WORD] ?? t).join('/') || 'nothing';
+  if (ins.size === 0) return [`${tgtName} takes no wires`, 'It works on its own — no inputs to connect.'];
+  if (outs.size === 0) return [`${srcName} sends nothing onward`, 'It terminates what it receives — wire INTO it instead.'];
+  let fix = 'Wire like to like — in wire mode, dragging card to card matches ports automatically.';
+  if (outs.has('http') && ins.has('data')) fix = `Web boxes don't speak storage. Put an App Server between ${srcName} and ${tgtName} — its storage port talks to databases and caches.`;
+  else if (outs.has('http') && ins.has('jobs')) fix = `Queues take jobs, not web traffic. An App Server enqueues work — wire ${srcName} → App Server → ${tgtName}.`;
+  else if (outs.has('data') && ins.has('http')) fix = `Storage flows downstream, not back to the web tier. Traffic already returns on its own.`;
+  else if (ins.has('control')) fix = `That's a control port — only an Autoscaler/Kubernetes policy wire fits, and only onto a Zone.`;
+  else if (outs.has('control')) fix = `${srcName} speaks control — wire it onto a Zone to manage it.`;
+  return [
+    `${srcName} speaks ${word(outs)} — ${tgtName} listens for ${word(ins)}`,
+    fix,
+  ];
 }
 
 /** First compatible out→in port pair between two nodes (wire tool quick-connect). */

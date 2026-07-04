@@ -96,13 +96,11 @@ export default function TutorialCard() {
   const active = step >= 0 && step < TUTORIAL_STEPS.length && !caseId && !sandbox;
   const def = active ? TUTORIAL_STEPS[step] : null;
 
-  // condition-driven advancement
+  // Condition-driven advancement. Synchronous on purpose: `watched` changes
+  // every engine tick, so a delayed timeout would be cleared before firing.
   useEffect(() => {
     if (!active || !def?.done) return;
-    if (def.done(watched)) {
-      const t = window.setTimeout(() => setStep(step + 1 >= TUTORIAL_STEPS.length ? -1 : step + 1), 450);
-      return () => window.clearTimeout(t);
-    }
+    if (def.done(watched)) setStep(step + 1 >= TUTORIAL_STEPS.length ? -1 : step + 1);
   }, [active, def, watched, step, setStep]);
 
   if (!active || !def) return null;

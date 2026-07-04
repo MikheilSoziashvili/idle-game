@@ -44,6 +44,14 @@ export default function NodePalette() {
         </button>
       </div>
       {open && (
+        <div className="port-legend" title="Wires connect like to like. In wire mode (W), dragging card to card picks the right ports for you.">
+          <span><i className="dot dot-http" />web</span>
+          <span><i className="dot dot-data" />storage</span>
+          <span><i className="dot dot-jobs" />jobs</span>
+          <span><i className="dot dot-control" />control</span>
+        </div>
+      )}
+      {open && (
         <div className="palette-scroll">
           {PALETTE_ORDER.map((cat) => {
             const specs = grouped.get(cat) ?? [];

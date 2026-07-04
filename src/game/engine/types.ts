@@ -11,8 +11,21 @@ export const CLASS_LABEL: Record<RequestClass, string> = {
   job: 'job',
 };
 
-/** Typed ports. Edges only connect matching types. */
-export type PortType = 'http' | 'data' | 'jobs' | 'repl' | 'control';
+/**
+ * Typed ports. Edges only connect matching types. Three traffic flavors plus
+ * control — deliberately small: web (http) carries requests between front-line
+ * boxes, storage (data) carries reads/writes/replication, jobs carries async
+ * work. ('repl' was merged into data; old saves are migrated on load.)
+ */
+export type PortType = 'http' | 'data' | 'jobs' | 'control';
+
+/** Plain-English names for port types, used everywhere the player reads them. */
+export const PORT_WORD: Record<PortType, string> = {
+  http: 'web',
+  data: 'storage',
+  jobs: 'jobs',
+  control: 'control',
+};
 
 export type NodeKind =
   | 'users'

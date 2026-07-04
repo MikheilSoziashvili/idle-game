@@ -62,6 +62,7 @@ interface SNode {
   cacheBonus: number;
   wasBooting: boolean;
   lastHintAt: number;
+  pendingHint: string | null; // set in pass A, applied when pass B builds the UI
   // per-tick UI outputs
   ui: NodeLive;
 }
@@ -250,6 +251,7 @@ export class Engine {
         cacheBonus: 0,
         wasBooting: false,
         lastHintAt: -999,
+        pendingHint: null,
         ui: blankUi(),
       };
       sn.kind = n.kind;
@@ -420,13 +422,19 @@ export class Engine {
         const phase = (this.simTime + offset) % BAL.spotCycleSec;
         if (phase < BAL.spotReclaimSec) {
           cap *= pn.kind === 'zone' ? 0.5 : 0;
-          this.hint(sn, 'Spot capacity reclaimed — back shortly');
+          this.hintEarly(sn, 'Spot capacity reclaimed — back shortly');
         }
       }
-      // replica without a WAL link from a primary barely functions
+      // replica without a storage link from a SQL primary barely functions
       if (pn.kind === 'replica') {
-        const linked = (this.inEdges.get(sn.id) ?? []).some((e) => e.tPort === 'repl');
-        if (!linked) cap *= 0.15;
+        const linked = (this.inEdges.get(sn.id) ?? []).some((e) => {
+          const src = byId.get(e.source);
+          return src && ['postgres', 'mysql', 'mssql'].includes(src.kind);
+        });
+        if (!linked) {
+          cap *= 0.15;
+          this.hintEarly(sn, 'Out of sync — wire a storage link from a SQL primary');
+        }
       }
       sn.effCap = cap;
     }
@@ -485,7 +493,7 @@ export class Engine {
       let intake = zeros();
       const intakeLat = zeros();
       for (const e of ins) {
-        if (e.tPort === 'control' || e.tPort === 'repl') continue;
+        if (e.tPort === 'control') continue;
         for (let c = 0; c < NC; c++) {
           const r = e.rates[c];
           if (r <= 0) continue;
@@ -700,6 +708,8 @@ export class Engine {
       ui.hitPct = missableReads > 0.001 ? hitsHere / missableReads : spec.hitRate?.read || spec.hitRate?.static ? 0 : -1;
       if (sn.offline) ui.hint = 'OFFLINE';
       else if (sn.booting > 0 && sn.ready === 0) ui.hint = 'provisioning…';
+      else if (!ui.hint && sn.pendingHint) ui.hint = sn.pendingHint;
+      sn.pendingHint = null;
       sn.ui = ui;
     }
 
@@ -1108,7 +1118,7 @@ export class Engine {
         if (visited.has(cur)) continue;
         visited.add(cur);
         for (const e of this.inEdges.get(cur) ?? []) {
-          if (e.tPort === 'control' || e.tPort === 'repl') continue;
+          if (e.tPort === 'control') continue;
           marked.add(e.id);
           if (!visited.has(e.source)) stack.push(e.source);
         }
@@ -1146,6 +1156,15 @@ export class Engine {
 
   private hint(sn: SNode, text: string) {
     sn.ui.hint = text;
+    if (this.simTime - sn.lastHintAt > BAL.hintCooldownSec) {
+      sn.lastHintAt = this.simTime;
+      this.log('warn', `${sn.name}: ${text}`);
+    }
+  }
+
+  /** Pass-A variant: pass B rebuilds the UI object, so stash the hint until then. */
+  private hintEarly(sn: SNode, text: string) {
+    sn.pendingHint = text;
     if (this.simTime - sn.lastHintAt > BAL.hintCooldownSec) {
       sn.lastHintAt = this.simTime;
       this.log('warn', `${sn.name}: ${text}`);
@@ -1308,7 +1327,9 @@ function classAt(i: number): 'static' | 'api' | 'read' | 'write' | 'job' {
 
 function portType(handle: string): PortType {
   const prefix = handle.split('-')[0];
-  return (prefix === 'ctl' ? 'control' : prefix) as PortType;
+  if (prefix === 'ctl') return 'control';
+  if (prefix === 'repl') return 'data'; // legacy handle ids from before the merge
+  return prefix as PortType;
 }
 
 function misconfigHint(kind: string, cls: string): string {
