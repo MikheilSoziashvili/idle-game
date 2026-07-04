@@ -1,0 +1,439 @@
+/* ==========================================================================
+   Canvas: the living architecture diagram. White cards with brand marks on a
+   dotted whiteboard; wires carry the load color (green → amber → red).
+   ========================================================================== */
+
+.flow-wrap {
+  position: absolute;
+  inset: 0;
+}
+
+.react-flow {
+  background: var(--bg);
+}
+.react-flow__attribution {
+  background: transparent;
+  color: var(--faint);
+}
+.react-flow__controls {
+  box-shadow: var(--shadow);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  fill: var(--dim);
+  width: 26px;
+  height: 26px;
+}
+.react-flow__controls-button:hover {
+  background: var(--panel-2);
+}
+.react-flow__minimap {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+/* keep RF chrome clear of the floating panels */
+.flow-controls {
+  margin-left: 240px !important;
+  margin-bottom: 10px !important;
+}
+.flow-minimap {
+  margin-right: 300px !important;
+  margin-bottom: 200px !important;
+}
+@media (max-width: 1220px) {
+  .flow-minimap { display: none; }
+  .flow-controls { margin-left: 218px !important; }
+}
+
+.react-flow__handle {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  border: 1.5px solid #ffffff;
+  background: var(--faint);
+  transition: transform 0.1s, box-shadow 0.1s;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.2);
+}
+.react-flow__handle:hover {
+  transform: scale(1.35);
+}
+.react-flow__handle.port-http { background: var(--port-http); }
+.react-flow__handle.port-data { background: var(--port-data); }
+.react-flow__handle.port-jobs { background: var(--port-jobs); }
+.react-flow__handle.port-repl { background: var(--port-repl); }
+.react-flow__handle.port-control { background: var(--port-control); border-radius: 50%; }
+
+.react-flow__handle.connectingto {
+  box-shadow: 0 0 0 4px rgba(47, 111, 235, 0.28);
+}
+.react-flow__handle.valid {
+  box-shadow: 0 0 0 4px rgba(24, 157, 90, 0.35);
+}
+
+.wire-mode .react-flow__handle {
+  box-shadow: 0 0 0 3px rgba(47, 111, 235, 0.18);
+}
+
+.react-flow__edge.selected .rf-packet-path {
+  filter: drop-shadow(0 0 3px rgba(47, 111, 235, 0.65));
+}
+
+.react-flow__connection-path {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+}
+
+/* ---------------- node card ---------------- */
+
+.node-card {
+  --cat: var(--accent);
+  --heat: transparent;
+  position: relative;
+  width: 178px;
+  background: var(--panel);
+  border: 1px solid var(--line-bright);
+  border-radius: 10px;
+  font-size: 11px;
+  box-shadow: var(--shadow);
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.node-card::before {
+  /* category spine */
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--cat);
+  opacity: 0.85;
+}
+.node-card::after {
+  /* overlay heat tint */
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 10px;
+  background: var(--heat);
+  opacity: 0.12;
+  pointer-events: none;
+}
+.node-card.overlay-active::after {
+  opacity: 0.26;
+}
+.selected > .node-card,
+.node-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1.5px rgba(47, 111, 235, 0.45), var(--shadow-lg);
+}
+.node-card.booting {
+  border-style: dashed;
+  animation: bootPulse 1.2s ease-in-out infinite;
+}
+@keyframes bootPulse {
+  50% { opacity: 0.65; }
+}
+.node-card.offline {
+  filter: saturate(0.15) brightness(0.97);
+  background: var(--panel-2);
+}
+.node-card.unhealthy {
+  border-color: rgba(213, 69, 63, 0.7);
+}
+
+.node-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px 5px 12px;
+}
+.node-head .node-logo {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+.node-name {
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  color: var(--text);
+}
+.node-pips {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.node-pips i {
+  width: 4px;
+  height: 8px;
+  border-radius: 1.5px;
+  background: var(--line-bright);
+}
+.node-pips i.on {
+  background: var(--cat);
+}
+
+.node-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px 10px;
+  padding: 1px 10px 7px 13px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--dim);
+}
+.node-stats b {
+  color: var(--text);
+  font-weight: 500;
+}
+.node-utilbar {
+  grid-column: 1 / -1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--panel-3);
+  overflow: hidden;
+  margin-top: 3px;
+}
+.node-utilbar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.25s linear;
+}
+
+.node-hint {
+  margin: 0 8px 7px 11px;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: rgba(184, 134, 11, 0.09);
+  border: 1px solid rgba(184, 134, 11, 0.35);
+  color: #8a6203;
+  font-size: 10px;
+  line-height: 1.3;
+}
+.node-hint.offline-hint {
+  background: rgba(213, 69, 63, 0.08);
+  border-color: rgba(213, 69, 63, 0.4);
+  color: #b03530;
+}
+
+.node-overlay-badge {
+  position: absolute;
+  top: -9px;
+  right: 8px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line-bright);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  z-index: 2;
+}
+
+.port-label {
+  position: absolute;
+  font-family: var(--mono);
+  font-size: 8.5px;
+  color: var(--faint);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* ---------------- zone node ---------------- */
+
+.zone-node {
+  --cat: var(--cat-compute);
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border: 1.5px dashed color-mix(in srgb, var(--cat) 50%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--cat) 5%, transparent);
+  font-size: 11px;
+}
+.selected > .zone-node {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1.5px rgba(47, 111, 235, 0.35);
+}
+.zone-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: grab;
+  background: color-mix(in srgb, var(--cat) 9%, var(--panel));
+  border-radius: 10px 10px 0 0;
+  border-bottom: 1px dashed color-mix(in srgb, var(--cat) 35%, transparent);
+}
+.zone-head .node-logo {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+}
+.zone-head .zone-title {
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--text);
+}
+.zone-head .zone-meta {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+}
+.zone-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 10px;
+  align-content: flex-start;
+}
+.zone-inst {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--cat) 22%, #ffffff);
+  border: 1px solid color-mix(in srgb, var(--cat) 55%, transparent);
+  box-shadow: inset 0 -3px 0 color-mix(in srgb, var(--cat) 30%, transparent);
+}
+.zone-inst.booting {
+  opacity: 0.5;
+  animation: bootPulse 1s ease-in-out infinite;
+  border-style: dashed;
+  background: transparent;
+}
+.zone-foot {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 4px 10px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--dim);
+  display: flex;
+  gap: 10px;
+  border-top: 1px dashed color-mix(in srgb, var(--cat) 28%, transparent);
+}
+.zone-auto-badge {
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--cat-automation);
+  color: var(--cat-automation);
+  background: #ffffff;
+}
+
+/* ---------------- region node ---------------- */
+
+.region-node {
+  width: 100%;
+  height: 100%;
+  border-radius: 14px;
+  pointer-events: none;
+  border: 1.5px solid hsla(var(--rhue), 55%, 45%, 0.45);
+  background: hsla(var(--rhue), 60%, 48%, 0.06);
+}
+.region-tag {
+  pointer-events: all;
+  position: absolute;
+  top: -1px;
+  left: -1px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 12px 4px 12px 4px;
+  background: hsla(var(--rhue), 55%, 48%, 0.13);
+  border: 1px solid hsla(var(--rhue), 55%, 45%, 0.5);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  cursor: grab;
+  color: var(--text);
+  backdrop-filter: blur(2px);
+}
+.region-tag .region-pol {
+  color: var(--dim);
+  font-size: 9.5px;
+}
+
+/* ---------------- draw previews & guides ---------------- */
+
+.draw-preview {
+  position: absolute;
+  border: 1.5px dashed var(--accent);
+  border-radius: 12px;
+  background: rgba(47, 111, 235, 0.06);
+  pointer-events: none;
+}
+.align-guide {
+  position: absolute;
+  background: var(--cat-cache);
+  opacity: 0.7;
+  pointer-events: none;
+}
+.align-guide.v { width: 1px; }
+.align-guide.h { height: 1px; }
+
+.stamp-ghost {
+  position: absolute;
+  pointer-events: none;
+  opacity: 0.8;
+}
+.stamp-ghost .ghost-node {
+  position: absolute;
+  width: 178px;
+  height: 64px;
+  border: 1.5px dashed var(--accent);
+  border-radius: 10px;
+  background: rgba(47, 111, 235, 0.07);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--accent);
+}
+.stamp-ghost .ghost-zone {
+  border-style: dotted;
+}
+
+/* mode cursors */
+.mode-wire .react-flow__pane { cursor: crosshair; }
+.mode-zone .react-flow__pane,
+.mode-region .react-flow__pane { cursor: cell; }
+.mode-bulldoze .react-flow__pane { cursor: not-allowed; }
+.mode-bulldoze .react-flow__node:hover { outline: 2px solid var(--bad); outline-offset: 2px; border-radius: 10px; }
+.mode-upgrade .react-flow__node:hover { outline: 2px solid var(--cat-compute); outline-offset: 2px; border-radius: 10px; }
+.mode-stamp .react-flow__pane { cursor: copy; }
+
+.wire-source-flag {
+  position: absolute;
+  top: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: #ffffff;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+  z-index: 3;
+}

@@ -1,0 +1,257 @@
+/* ==========================================================================
+   UPTIME design system — a LIVING ARCHITECTURE DIAGRAM.
+   Light whiteboard canvas (draw.io / Excalidraw / AWS-diagram DNA) with real
+   brand marks on white cards; the dashboard and ops console stay dark like a
+   terminal docked in a light IDE. Load state still colors the wires.
+   ========================================================================== */
+
+:root {
+  /* light chrome (canvas, panels, cards) */
+  --bg: #eef1f5;
+  --bg-deep: #e7ebf1;
+  --panel: #ffffff;
+  --panel-2: #f4f6fa;
+  --panel-3: #e9edf4;
+  --line: #dbe2eb;
+  --line-bright: #c2cdda;
+  --text: #1a2634;
+  --dim: #55677a;
+  --faint: #8b9fb3;
+  --accent: #2f6feb;
+  --ok: #189d5a;
+  --amber: #b8860b;
+  --bad: #d5453f;
+  --glow-ok: 0 0 12px rgba(24, 157, 90, 0.35);
+  --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* category accents, tuned for a light canvas */
+  --cat-ingress: #0969da;
+  --cat-compute: #d4681f;
+  --cat-data: #6f42c1;
+  --cat-cache: #d13c8a;
+  --cat-async: #0f9d8f;
+  --cat-observability: #189d5a;
+  --cat-automation: #0e8fa3;
+
+  --port-http: #0969da;
+  --port-data: #6f42c1;
+  --port-jobs: #0f9d8f;
+  --port-repl: #8a63d2;
+  --port-control: #0e8fa3;
+
+  --radius: 8px;
+  --shadow: 0 2px 8px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-lg: 0 8px 28px rgba(16, 24, 40, 0.14);
+}
+
+/* The dark instruments: dashboard header + ops console read as terminals.
+   Scoping the custom properties re-skins every var()-based rule inside. */
+.dash,
+.console {
+  --bg: #0b1016;
+  --bg-deep: #080c11;
+  --panel: #10161d;
+  --panel-2: #161e27;
+  --panel-3: #1d2733;
+  --line: #26313e;
+  --line-bright: #38495c;
+  --text: #dce5ef;
+  --dim: #8299b0;
+  --faint: #55708a;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg-deep);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------- app shell ---------------- */
+
+.app {
+  display: grid;
+  height: 100%;
+  grid-template-rows: 60px 1fr;
+  grid-template-columns: 1fr;
+}
+
+.app-main {
+  position: relative;
+  overflow: hidden;
+}
+
+/* ---------------- shared controls ---------------- */
+
+button {
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line-bright);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+button:hover:not(:disabled) {
+  background: var(--panel-2);
+  border-color: var(--faint);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+button.primary {
+  background: rgba(47, 111, 235, 0.09);
+  border-color: rgba(47, 111, 235, 0.55);
+  color: #2059c8;
+}
+button.primary:hover:not(:disabled) {
+  background: rgba(47, 111, 235, 0.16);
+}
+.dash button.primary {
+  color: #8ab8ff;
+  background: rgba(47, 111, 235, 0.16);
+}
+button.danger {
+  background: rgba(213, 69, 63, 0.07);
+  border-color: rgba(213, 69, 63, 0.5);
+  color: #b53832;
+}
+button.danger:hover:not(:disabled) {
+  background: rgba(213, 69, 63, 0.14);
+}
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--dim);
+}
+button.ghost:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--panel-2);
+  border-color: var(--line);
+}
+
+input[type='text'],
+textarea,
+select {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line-bright);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+input[type='range'] {
+  accent-color: var(--accent);
+}
+input[type='checkbox'] {
+  accent-color: var(--accent);
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-bright);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  border: 1px solid var(--line-bright);
+  background: var(--panel-2);
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+kbd {
+  font-family: var(--mono);
+  font-size: 10px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-bright);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  padding: 0 5px;
+  color: var(--dim);
+}
+
+.sep-v {
+  width: 1px;
+  align-self: stretch;
+  background: var(--line);
+  margin: 8px 2px;
+}
+
+/* brand-mark chip used on cards, palette rows and inspector titles */
+.node-logo {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06);
+}
+.node-logo svg {
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001s !important;
+    transition-duration: 0.001s !important;
+  }
+}
