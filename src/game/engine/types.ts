@@ -18,17 +18,29 @@ export type NodeKind =
   | 'users'
   | 'nginx'
   | 'lb'
+  | 'haproxy'
   | 'apigw'
   | 'cdn'
+  | 'fastly'
+  | 'varnish'
   | 's3'
   | 'app'
+  | 'spot'
   | 'lambda'
   | 'redis'
+  | 'memcached'
   | 'postgres'
+  | 'mysql'
+  | 'mssql'
+  | 'mongo'
+  | 'elastic'
   | 'replica'
   | 'queue'
+  | 'rabbitmq'
+  | 'sqs'
   | 'worker'
   | 'prometheus'
+  | 'datadog'
   | 'grafana'
   | 'autoscaler'
   | 'k8s'
@@ -58,6 +70,7 @@ export interface NodeSpec {
   short: string; // 2-3 letter monogram on the node card
   category: Category;
   blurb: string; // dry one-liner for palette/inspector
+  docsUrl: string; // official real-world documentation for this technology
   cost: number;
   opCost: number; // $/s at level 1
   capacity: number; // req/s at level 1 (weighted units)
@@ -70,6 +83,7 @@ export interface NodeSpec {
   hitRate?: Partial<Record<RequestClass, number>>; // cache-like partial serve fraction
   perServeCost?: number; // $ per served request (S3, Lambda)
   smartSplit?: boolean; // split output by target headroom (LB); mesh grants globally
+  rpWeight?: number; // metrics nodes: RP contribution multiplier (default 1)
   zoneUnit?: boolean; // usable as a zone template
   research?: string; // research id gate
   revGate?: number; // lifetime revenue gate for the palette
@@ -108,6 +122,7 @@ export interface PlacedNode {
   y: number;
   level: number; // 1..maxLevel
   spent: number; // total cash sunk (for refunds)
+  label?: string; // player-given name; ops console + card use it
   bootUntil?: number; // simTime when provisioning finishes
   disabled?: boolean;
   zone?: ZoneState;
@@ -140,7 +155,7 @@ export interface RegionRect {
 }
 
 export type Overlay = 'none' | 'load' | 'latency' | 'cost' | 'errors' | 'cache';
-export type Tool = 'move' | 'wire' | 'zone' | 'region' | 'stamp' | 'upgrade' | 'bulldoze';
+export type Tool = 'move' | 'select' | 'wire' | 'zone' | 'region' | 'stamp' | 'upgrade' | 'bulldoze';
 
 export interface NodeLive {
   util: number; // 0..1+ smoothed
@@ -260,6 +275,73 @@ export interface MilestoneDef {
 }
 
 export type PerkId = 'throughput' | 'revenue' | 'efficiency' | 'momentum';
+
+// ---------------------------------------------------------------------------
+// Live-ops layer: contracts, drills, postmortems, mandates, history, rival.
+// ---------------------------------------------------------------------------
+
+export type ContractMetric = 'p95' | 'uptime' | 'dropped' | 'cost' | 'served' | 'profit';
+
+/** A rolled SLA offer / active commitment. Evaluated like case objectives. */
+export interface ContractInstance {
+  id: string;
+  key: string; // template key
+  label: string;
+  client: string;
+  metric: ContractMetric;
+  op: '<' | '>';
+  value: number;
+  holdSec: number; // must hold continuously
+  deadlineAt: number; // simTime by which it must complete (once accepted)
+  offerExpiresAt: number; // simTime the offer leaves the board
+  rewardCash: number;
+  rewardRp: number;
+  repBonus: number;
+  repPenalty: number; // on failure
+  held: number; // live progress (active contract only)
+}
+
+/** Post-incident report card. */
+export interface Postmortem {
+  id: number;
+  at: number; // simTime the incident ended
+  kind: ActiveEvent['kind'];
+  title: string;
+  durSec: number;
+  dropped: number; // requests lost during the window
+  repLost: number;
+  mitigations: string[]; // what softened it (already built)
+  gaps: string[]; // what would have helped (not built)
+  takeaway: string;
+}
+
+export interface HistoryEntry {
+  at: number; // Date.now()
+  icon: string;
+  label: string;
+}
+
+export type MandateId = 'blitzscale' | 'ironclad' | 'shoestring';
+
+export interface MandateDef {
+  id: MandateId;
+  name: string;
+  desc: string; // effects, human-readable
+  spBonus: number; // extra SP multiplier at the NEXT raise (0.4 = +40%)
+}
+
+export type RunConstraint = 'none' | 'serverless' | 'nocache' | 'frugal';
+
+export interface RivalState {
+  name: string;
+  rps: number;
+}
+
+export interface DrillState {
+  streak: number;
+  lastDay: string; // YYYY-MM-DD (real time)
+  activeUntil: number; // simTime; 0 = not running
+}
 
 /** Aggregate modifiers recomputed each tick from research/perks/singleton nodes. */
 export interface GlobalMods {

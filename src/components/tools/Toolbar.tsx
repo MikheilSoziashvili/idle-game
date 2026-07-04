@@ -3,11 +3,13 @@ import { useShallow } from 'zustand/react/shallow';
 import type { Tool } from '../../game/engine/types';
 import { unlockedTools, useGame } from '../../game/state/store';
 import { zoneUnitKinds } from '../../game/systems/zoning';
+import { downloadArchitectureSvg } from '../../game/systems/photo';
 import { SPECS } from '../../game/catalog/nodes';
 
 const TOOLS: { id: Tool; icon: string; key: string; name: string; desc: string }[] = [
-  { id: 'move', icon: '⬚', key: 'V', name: 'Select / Move', desc: 'Drag nodes · Shift+drag to box-select' },
-  { id: 'wire', icon: '↦', key: 'W', name: 'Wire', desc: 'Drag port→port, or click node then node' },
+  { id: 'move', icon: '✥', key: 'V', name: 'Move', desc: 'Drag nodes · Shift+drag to box-select' },
+  { id: 'select', icon: '⬚', key: 'S', name: 'Select', desc: 'Drag a box to select · click to select · Shift adds' },
+  { id: 'wire', icon: '↦', key: 'W', name: 'Wire', desc: 'Drag node→node (ports auto-match) · click a wire to remove it' },
   { id: 'zone', icon: '▦', key: 'Z', name: 'Zone', desc: 'Paint a self-scaling capacity pool' },
   { id: 'region', icon: '⊕', key: 'R', name: 'Region', desc: 'Paint a region & apply policies' },
   { id: 'stamp', icon: '⌗', key: 'B', name: 'Stamp', desc: 'Place a saved blueprint' },
@@ -30,6 +32,7 @@ export default function Toolbar() {
   const pendingZoneTemplate = useGame((s) => s.pendingZoneTemplate);
   const setPendingZoneTemplate = useGame((s) => s.setPendingZoneTemplate);
   const zoneKinds = useGame(useShallow(zoneUnitKinds));
+  const tutorialStep = useGame((s) => s.tutorialStep);
 
   useEffect(() => {
     if (tool === 'zone' && !pendingZoneTemplate && zoneKinds.length > 0) {
@@ -42,10 +45,11 @@ export default function Toolbar() {
       <div className="toolbar" role="toolbar" aria-label="Build tools">
         {TOOLS.map((t) => {
           const locked = !unlocked.includes(t.id);
+          const tutPulse = (tutorialStep === 2 && t.id === 'wire') || (tutorialStep === 4 && t.id === 'upgrade');
           return (
             <button
               key={t.id}
-              className={`tool-btn ${tool === t.id ? 'active' : ''} ${locked ? 'locked' : ''}`}
+              className={`tool-btn ${tool === t.id ? 'active' : ''} ${locked ? 'locked' : ''} ${tutPulse ? 'tut-pulse' : ''}`}
               onClick={() => !locked && setTool(t.id)}
               aria-label={t.name}
               aria-pressed={tool === t.id}
@@ -71,6 +75,20 @@ export default function Toolbar() {
           <span className="tool-tip">
             Auto-layout <kbd>L</kbd>
             <small>Tidy the diagram left→right</small>
+          </span>
+        </button>
+        <button
+          className="tool-btn"
+          onClick={() => {
+            const ok = downloadArchitectureSvg(useGame.getState());
+            useGame.getState().addToast(ok ? 'ok' : 'warn', ok ? 'Architecture exported' : 'Nothing to export', ok ? 'Saved as SVG — a clean, shareable diagram.' : 'Place some infrastructure first.');
+          }}
+          aria-label="Export architecture diagram"
+        >
+          ⎙
+          <span className="tool-tip">
+            Photo mode
+            <small>Export the graph as a clean SVG architecture diagram</small>
           </span>
         </button>
       </div>

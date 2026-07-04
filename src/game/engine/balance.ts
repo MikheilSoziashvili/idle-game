@@ -62,11 +62,13 @@ export const BAL = {
   autosaveSec: 10,
 
   // --- research points -------------------------------------------------------
-  // Prometheus samples traffic: rp/s = (base*sqrt(served) + perLevel*levels) * mults
-  rpBase: 0.12,
-  rpPerPromLevel: 0.05,
-  grafanaRpMult: 1.6,
-  obs2RpMult: 1.5,
+  // Metrics nodes sample traffic: rp/s = (base*sqrt(served)*sqrt(Σweight) + perLevel*Σ(level·weight)) * mults
+  // Tuned scarce on purpose: the tree is wide, so every research is a real choice.
+  rpBase: 0.075,
+  rpPerPromLevel: 0.03,
+  grafanaRpMult: 1.5,
+  obs2RpMult: 1.4,
+  datadogRpWeight: 1.75, // Datadog samples better than self-hosted Prometheus — for a SaaS bill
 
   // --- upgrades --------------------------------------------------------------
   capPerLevel: 1.65, // capacity multiplier per level above 1
@@ -84,6 +86,13 @@ export const BAL = {
   zoneDownGraceSec: 20, // must be under-utilized this long before scale-in
   aggressiveCooldownMult: 0.45,
   aggressiveOpCostMult: 1.1,
+
+  // --- spot instances ----------------------------------------------------------
+  // Spot boxes are ~60% cheaper but get reclaimed on a rolling cycle: each node
+  // goes dark for reclaimSec once per cycleSec (offset by node id, so a fleet
+  // never loses everything at once). N+1 spot capacity is the whole lesson.
+  spotCycleSec: 210,
+  spotReclaimSec: 12,
 
   // --- singleton node effects --------------------------------------------------
   k8sZoneCostMult: 0.8, // k8s bin-packing discount on attached zones
@@ -126,6 +135,41 @@ export const BAL = {
   depFailLatencyMs: 90,
   depFailDurSec: 35,
   badDeployHealth: 0.25,
+
+  // --- SLA contracts -----------------------------------------------------------
+  contractRefreshSec: 300, // new offers roll onto the board
+  contractOfferCount: 3,
+  contractDeadlineSec: 420, // time to complete once accepted
+  contractRepPenalty: 6,
+
+  // --- daily chaos drill ---------------------------------------------------------
+  drillDurSec: 180,
+  drillPassDropShare: 0.03,
+  drillBaseRp: 8,
+  drillStreakRp: 4, // × min(streak, 15)
+
+  // --- node mastery ---------------------------------------------------------------
+  masteryThresholds: [1e3, 1e5, 1e7] as const, // bronze / silver / gold (lifetime served per kind)
+  masteryCapPerTier: 0.02, // +2% capacity per tier for that kind
+
+  // --- adaptive pressure -----------------------------------------------------------
+  // Event pacing reads the player's state: struggling → longer gaps & gentler
+  // spikes; cruising → shorter gaps. Invisible difficulty, visible fairness.
+  pressureLowUptime: 97.5,
+  pressureLowCash: 80,
+  pressureHighUptime: 99.7,
+  pressureHighCash: 2000,
+  pressureEasyGapMult: 1.6,
+  pressureHardGapMult: 0.72,
+  pressureEasySpikeCap: 2.4,
+
+  // --- first-failure insurance -----------------------------------------------------
+  insuranceWindowSec: 30,
+
+  // --- rival ------------------------------------------------------------------------
+  rivalGrowth: 0.0045, // logistic rate per second toward its round target
+  rivalTargetShare: 0.9, // of the current round's rps cap
+  rivalBeatSp: 2, // bonus SP when raising while ahead of the rival
 
   // --- misc UI ----------------------------------------------------------------
   logCap: 250,
@@ -172,6 +216,13 @@ export function roundForSp(totalSp: number): number {
 export function perkCost(level: number): number {
   return level + 1; // 1, 2, 3 ... SP per level
 }
+/** Mastery tier (0-3) for a kind's lifetime served count. */
+export function masteryTier(served: number): number {
+  let t = 0;
+  for (const th of BAL.masteryThresholds) if (served >= th) t++;
+  return t;
+}
+export const MASTERY_NAMES = ['', 'bronze', 'silver', 'gold'] as const;
 
 export function fmtMoney(n: number): string {
   const abs = Math.abs(n);

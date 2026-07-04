@@ -261,7 +261,7 @@
 
 .palette {
   position: absolute;
-  left: 10px;
+  left: 62px; /* clear of the 38px toolbar column at left:10 */
   bottom: 12px;
   top: 320px;
   width: 226px;
@@ -357,6 +357,19 @@
   flex-shrink: 0;
 }
 .pal-item.unaffordable .pal-cost { color: var(--bad); }
+.pal-item .pal-docs {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--faint);
+  text-decoration: none;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.pal-item:hover .pal-docs { opacity: 1; }
+.pal-item .pal-docs:hover { color: var(--accent); background: var(--panel-2); }
 
 /* ---------------- inspector ---------------- */
 
@@ -479,6 +492,46 @@
   overflow: hidden;
 }
 .objectives.shift-down { top: 64px; }
+
+/* ---------------- SLA contracts board ---------------- */
+.contracts {
+  position: absolute;
+  left: 62px;
+  top: 248px;
+  z-index: 6;
+  width: 270px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.contracts.shift-down { top: 300px; }
+.contract-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+}
+.contract-row.active { background: rgba(47, 111, 235, 0.05); }
+.contract-row .contract-main { flex: 1; min-width: 0; }
+.contract-row b { display: block; font-size: 11.5px; }
+.contract-row small { display: block; color: var(--faint); font-size: 9.5px; margin-top: 1px; }
+.contract-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--panel-2);
+  margin: 5px 0 3px;
+  overflow: hidden;
+}
+.contract-bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.5s linear;
+}
 .obj-item {
   padding: 8px 12px;
   border-top: 1px solid var(--line);
@@ -971,6 +1024,107 @@
   margin-bottom: 2px;
 }
 
+/* rename input + mastery chips */
+.insp-rename {
+  width: 100%;
+  margin: 0 0 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.mastery-chip.m1 { border-color: #b08d57; color: #8a6b3f; }
+.mastery-chip.m2 { border-color: #9aa5b1; color: #5f6b78; }
+.mastery-chip.m3 { border-color: #d4a017; color: #a07708; background: rgba(212, 160, 23, 0.08); }
+
+/* why-popovers on dashboard gauges */
+.gauge { position: relative; cursor: pointer; }
+.why-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 40;
+  width: 300px;
+  background: var(--panel);
+  border: 1px solid var(--line-bright);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  padding: 10px 12px;
+  cursor: default;
+}
+.why-pop p { margin: 0 0 6px; font-size: 11px; line-height: 1.5; color: var(--dim); }
+.why-pop p:last-child { margin-bottom: 0; }
+
+/* mandate / constraint chips in the dash */
+.mandate-chip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid rgba(47, 111, 235, 0.5);
+  border-radius: 5px;
+  font-size: 8.5px;
+  letter-spacing: 0.06em;
+  color: #2059c8;
+  text-transform: lowercase;
+}
+.mandate-chip.constraint { border-color: rgba(212, 104, 31, 0.55); color: #a34e12; }
+
+/* doctor findings */
+.finding {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-bright);
+  border-radius: 8px;
+  padding: 8px 11px;
+  margin-bottom: 8px;
+}
+.finding .finding-head { display: flex; gap: 8px; align-items: baseline; font-size: 12px; }
+.finding p { margin: 4px 0 0; font-size: 11.5px; color: var(--dim); line-height: 1.45; }
+.finding .finding-fix { color: var(--text); }
+
+/* company history */
+.hist-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.hist-stat {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.hist-stat b { display: block; font-size: 14px; }
+.hist-stat small { color: var(--faint); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; }
+.hist-row { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
+.hist-row .hist-icon { width: 18px; text-align: center; flex-shrink: 0; }
+.hist-row .hist-label { flex: 1; min-width: 0; color: var(--dim); }
+.hist-row .hist-when { color: var(--faint); font-size: 10px; flex-shrink: 0; }
+
+/* run grades (prestige) */
+.grade-box { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 4px; }
+.grade-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.grade-axis { width: 70px; font-size: 10.5px; color: var(--faint); }
+.grade-bar { flex: 1; height: 5px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+.grade-bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+
+/* mandate picker */
+.mandate-pick { display: flex; flex-wrap: wrap; gap: 6px; }
+.mandate-pick button { font-size: 11px; }
+
+/* challenge editor */
+.editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.editor-grid label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--dim); }
+.editor-obj { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; font-size: 12px; }
+
+/* postmortem card accent */
+.lesson-card.postmortem { border-left: 3px solid var(--bad); }
+
+/* real-world documentation link under the field manual */
+.insp-docs {
+  display: inline-block;
+  margin: 0 0 10px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent);
+  padding-bottom: 1px;
+}
+.insp-docs:hover { border-bottom-style: solid; }
+
 /* ---------------- case studies ---------------- */
 
 .case-hud {
@@ -1059,6 +1213,8 @@
   align-items: flex-start;
 }
 .case-card.done-before { border-color: rgba(24, 157, 90, 0.45); }
+.case-card.locked { opacity: 0.55; }
+.case-card.locked .case-brief { font-style: italic; }
 .case-card .case-info { flex: 1; min-width: 0; }
 .case-card .case-client {
   font-family: var(--mono);

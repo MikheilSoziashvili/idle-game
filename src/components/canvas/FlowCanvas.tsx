@@ -6,6 +6,7 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  SelectionMode,
   ViewportPortal,
   useReactFlow,
   type Connection,
@@ -26,7 +27,7 @@ import { CATEGORY_INFO, SPECS, specOf } from '../../game/catalog/nodes';
 import type { NodeKind } from '../../game/engine/types';
 import { STARTER_BLUEPRINTS } from '../../game/catalog/blueprints';
 import { computeAutoLayout, alignmentGuides } from '../../game/engine/layout';
-import { BAL, fmtMoney } from '../../game/engine/balance';
+import { BAL, fmtMoney, fmtNum } from '../../game/engine/balance';
 
 const nodeTypes = {
   infra: InfraNode as unknown as React.ComponentType<NodeProps>,
@@ -102,10 +103,11 @@ function CanvasInner() {
             level: n.level,
             disabled: Boolean(n.disabled),
             wireFlag: wireFrom === n.id,
+            label: n.label,
           } satisfies InfraData,
           zIndex: 1,
           selected: selSet.has(n.id),
-          draggable: tool === 'move',
+          draggable: tool === 'move' || tool === 'select',
           deletable: n.kind !== 'users',
         });
       }
@@ -169,28 +171,14 @@ function CanvasInner() {
   const isValidConnection = useCallback((conn: Edge | Connection) => {
     const { source, target, sourceHandle, targetHandle } = conn;
     if (!source || !target || !sourceHandle || !targetHandle || source === target) return false;
-    const s = useGame.getState();
-    const src = s.nodes.find((n) => n.id === source);
-    const tgt = s.nodes.find((n) => n.id === target);
-    if (!src || !tgt) return false;
-    const sh = handlesOf(src).find((h) => h.id === sourceHandle && h.dir === 'out');
-    const th = handlesOf(tgt).find((h) => h.id === targetHandle && h.dir === 'in');
-    if (!sh || !th || sh.type !== th.type) return false;
-    if (sh.type === 'control' && tgt.kind !== 'zone') return false;
-    return !s.edges.some(
-      (e) => e.source === source && e.target === target && e.sourceHandle === sourceHandle && e.targetHandle === targetHandle,
-    );
+    return resolveConnection(source, sourceHandle, target, targetHandle) !== null;
   }, []);
 
   const onConnect = useCallback((c: Connection) => {
-    if (c.source && c.target && c.sourceHandle && c.targetHandle) {
-      useGame.getState().connectPorts({
-        source: c.source,
-        sourceHandle: c.sourceHandle,
-        target: c.target,
-        targetHandle: c.targetHandle,
-      });
-    }
+    if (!c.source || !c.target || !c.sourceHandle || !c.targetHandle) return;
+    // 'any-*' handles (whole-card wiring) resolve to the best compatible port pair.
+    const pair = resolveConnection(c.source, c.sourceHandle, c.target, c.targetHandle);
+    if (pair) useGame.getState().connectPorts(pair);
   }, []);
 
   // Deletes (Backspace / bulldoze) always go through confirm-or-undo paths.
@@ -248,7 +236,9 @@ function CanvasInner() {
 
   const onEdgeClick = useCallback(
     (e: React.MouseEvent, edge: Edge) => {
-      if (tool === 'bulldoze') {
+      // Wire mode is for managing connections: clicking an existing one removes
+      // it (undoable). Bulldoze keeps doing the same for consistency.
+      if (tool === 'bulldoze' || tool === 'wire') {
         e.stopPropagation();
         useGame.getState().removeEdges([edge.id]);
       }
@@ -309,13 +299,18 @@ function CanvasInner() {
   );
 
   // ---------------- palette drag & drop ----------------
+  const dragKind = useGame((s) => s.dragKind);
+  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
   const onDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
+    const r = wrapRef.current?.getBoundingClientRect();
+    if (r) setDragPos({ x: e.clientX - r.left, y: e.clientY - r.top });
   }, []);
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
+      setDragPos(null);
       const kind = e.dataTransfer.getData('application/uptime') as Exclude<NodeKind, 'zone'>;
       if (!kind || !SPECS[kind]) return;
       const pos = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
@@ -323,6 +318,7 @@ function CanvasInner() {
     },
     [rf],
   );
+  const onDragLeave = useCallback(() => setDragPos(null), []);
 
   // ---------------- zone / region draw layer ----------------
   const beginDraw = useCallback((e: React.PointerEvent) => {
@@ -415,6 +411,7 @@ function CanvasInner() {
         onNodeDragStop={onNodeDragStop}
         onDragOver={onDragOver}
         onDrop={onDrop}
+        onDragLeave={onDragLeave}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         defaultEdgeOptions={{ type: 'packet' }}
@@ -424,11 +421,14 @@ function CanvasInner() {
         maxZoom={1.8}
         snapToGrid
         snapGrid={[8, 8]}
-        connectionRadius={36}
+        connectionRadius={48}
         panOnDrag={[1, 2]}
         selectionKeyCode="Shift"
+        selectionOnDrag={tool === 'select'}
+        selectionMode={SelectionMode.Partial}
+        multiSelectionKeyCode={['Shift', 'Meta', 'Control']}
         deleteKeyCode={['Backspace', 'Delete']}
-        nodesDraggable={tool === 'move'}
+        nodesDraggable={tool === 'move' || tool === 'select'}
         nodesConnectable={tool === 'move' || tool === 'wire'}
         onlyRenderVisibleElements
         proOptions={{ hideAttribution: false }}
@@ -483,10 +483,26 @@ function CanvasInner() {
         )}
       </ReactFlow>
 
-      {/* zone/region drawing capture layer */}
+      {/* what-if ghost: spec facts follow the palette drag before you commit */}
+      {dragKind && dragPos && SPECS[dragKind] && (
+        <div className="drag-whatif" style={{ left: dragPos.x + 18, top: dragPos.y + 14 }}>
+          <b>{SPECS[dragKind].name}</b>
+          <span className="mono">
+            {fmtNum(SPECS[dragKind].capacity)} rps cap · ${SPECS[dragKind].opCost.toFixed(2)}/s
+            {SPECS[dragKind].perServeCost ? ` · $${SPECS[dragKind].perServeCost}/req` : ''}
+          </span>
+          <span>
+            {SPECS[dragKind].serves.length > 0 ? `serves: ${SPECS[dragKind].serves.join(', ')}` : SPECS[dragKind].hitRate ? 'cache — absorbs upstream reads' : SPECS[dragKind].capacity === 0 ? 'support node — no traffic' : 'routes traffic onward'}
+          </span>
+        </div>
+      )}
+
+      {/* zone/region drawing capture layer — z 5 keeps it above the canvas but
+          below every floating panel (objectives 6, palette 7, toolbar 8), so
+          the zone-template row and tools stay clickable while drawing. */}
       {(tool === 'zone' || tool === 'region') && (
         <div
-          style={{ position: 'absolute', inset: 0, zIndex: 9, cursor: 'cell', touchAction: 'none' }}
+          style={{ position: 'absolute', inset: 0, zIndex: 5, cursor: 'cell', touchAction: 'none' }}
           onPointerDown={beginDraw}
           onPointerMove={moveDraw}
           onPointerUp={endDraw}
@@ -520,12 +536,26 @@ function bestPortPair(
   srcId: string,
   tgtId: string,
 ): { source: string; sourceHandle: string; target: string; targetHandle: string } | null {
+  return resolveConnection(srcId, 'any-out', tgtId, 'any-in');
+}
+
+/**
+ * Resolve a (possibly 'any-*') handle pair to a concrete, legal, non-duplicate
+ * connection. 'any-out'/'any-in' are the invisible whole-card handles rendered
+ * in wire mode: they mean "pick the best compatible port for me".
+ */
+function resolveConnection(
+  srcId: string,
+  sourceHandle: string,
+  tgtId: string,
+  targetHandle: string,
+): { source: string; sourceHandle: string; target: string; targetHandle: string } | null {
   const s = useGame.getState();
   const src = s.nodes.find((n) => n.id === srcId);
   const tgt = s.nodes.find((n) => n.id === tgtId);
   if (!src || !tgt) return null;
-  const outs = handlesOf(src).filter((h) => h.dir === 'out');
-  const ins = handlesOf(tgt).filter((h) => h.dir === 'in');
+  const outs = handlesOf(src).filter((h) => h.dir === 'out' && (sourceHandle === 'any-out' || h.id === sourceHandle));
+  const ins = handlesOf(tgt).filter((h) => h.dir === 'in' && (targetHandle === 'any-in' || h.id === targetHandle));
   for (const o of outs) {
     for (const i of ins) {
       if (o.type !== i.type) continue;

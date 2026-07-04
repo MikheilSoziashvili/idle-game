@@ -1,9 +1,51 @@
+import { useState } from 'react';
 import { BAL, fmtMoney, fmtNum, pendingSp } from '../../game/engine/balance';
 import { roundIndex } from '../../game/engine/economy';
+import { mandateById } from '../../game/catalog/mandates';
 import { researchOpen, useGame } from '../../game/state/store';
 import { rampColor } from '../../game/systems/overlays';
 
+// Click-to-explain popovers: every gauge can answer "why is this number what
+// it is?" with the actual formula and its live inputs.
+function whyText(key: string, g: ReturnType<typeof useGame.getState>['live']['gauges'], rep: number): string[] {
+  switch (key) {
+    case 'rps':
+      return [
+        `The market offers ${fmtNum(g.offered)} rps; you serve ${fmtNum(g.served)}.`,
+        `Drops (${fmtNum(g.dropped)}/s) are requests that overflowed a queue or timed out — lost revenue, damaged reputation.`,
+        'Offered demand = company scale × launched tiers, capped by the funding round.',
+      ];
+    case 'p95':
+      return [
+        '95% of user-facing requests finish faster than this (async jobs excluded).',
+        `Each hop adds base latency × congestion (1 + 2·util³) + queue wait.`,
+        `Revenue decays past ${BAL.latValueKneeMs}ms and bottoms out at ${Math.round(BAL.latValueFloor * 100)}% by ${BAL.latValueZeroMs}ms.`,
+      ];
+    case 'profit':
+      return [
+        `Revenue ${fmtMoney(g.revenuePerSec)}/s − infrastructure ${fmtMoney(g.costPerSec)}/s.`,
+        'Served requests pay per class (writes > reads > static), scaled down by latency.',
+        'Without Stripe, revenue lands in AR first and settles ~3%/s.',
+      ];
+    case 'uptime':
+      return [
+        'Success ratio of completed requests (shed 429s count 15% as bad).',
+        `Reputation (${Math.round(rep)}) chases a target set by uptime: 90% → 0 rep, 99.9%+ → 100.`,
+        `Rep bleeds ~4× faster than it heals — and growth rate follows reputation.`,
+      ];
+    case 'rp':
+      return [
+        `Metrics nodes sample served traffic: rp/s = ${BAL.rpBase}·√served·√Σweight + ${BAL.rpPerPromLevel}·Σ(level·weight).`,
+        'Datadog samples at 1.75× weight; Grafana ×1.5, Distributed Tracing ×1.4 on top.',
+        'Contracts, drills, missions and milestones pay lump sums.',
+      ];
+    default:
+      return [];
+  }
+}
+
 export default function Dashboard() {
+  const [why, setWhy] = useState<string | null>(null);
   const g = useGame((s) => s.live.gauges);
   const cash = useGame((s) => s.cash);
   const ar = useGame((s) => s.ar);
@@ -24,6 +66,13 @@ export default function Dashboard() {
   const canResearch = useGame(researchOpen);
   const caseId = useGame((s) => s.caseId);
 
+  const rival = useGame((s) => s.rival);
+  const mandate = useGame((s) => s.mandate);
+  const runConstraint = useGame((s) => s.runConstraint);
+  const drill = useGame((s) => s.drill);
+  const startDrill = useGame((s) => s.startDrill);
+  const simTime = useGame((s) => s.simTime);
+
   const round = roundIndex(spTotal);
   const pending = pendingSp(lifetimeRev);
   const canRaise = pending >= BAL.prestigeMinSp;
@@ -31,13 +80,42 @@ export default function Dashboard() {
   const profitPos = g.profitPerSec >= 0;
   const activeEvent = events.find((e) => e.started);
 
+  const today = new Date().toISOString().slice(0, 10);
+  const drillRunning = drill.activeUntil > simTime;
+  const drillAvailable = !sandbox && !caseId && !drillRunning && drill.lastDay !== today;
+
+  const gaugeWhy = (key: string) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setWhy(why === key ? null : key);
+  };
+  const Why = ({ k }: { k: string }) =>
+    why === k ? (
+      <div className="why-pop" onClick={(e) => e.stopPropagation()}>
+        {whyText(k, g, rep).map((line, i) => (
+          <p key={i}>{line}</p>
+        ))}
+      </div>
+    ) : null;
+
   return (
-    <header className="dash">
+    <header className="dash" onClick={() => why && setWhy(null)}>
       <div>
         <div className="dash-logo">
           UPTIME<b>_</b>
         </div>
-        <div className="dash-round">{sandbox ? 'SANDBOX' : BAL.roundNames[round].toUpperCase()}</div>
+        <div className="dash-round">
+          {sandbox ? 'SANDBOX' : BAL.roundNames[round].toUpperCase()}
+          {mandate && !sandbox && (
+            <span className="mandate-chip" title={mandateById.get(mandate)?.desc}>
+              {mandateById.get(mandate)?.name}
+            </span>
+          )}
+          {runConstraint !== 'none' && !sandbox && (
+            <span className="mandate-chip constraint" title="Run constraint — raise a round under it for an achievement">
+              {runConstraint === 'serverless' ? 'serverless-only' : runConstraint === 'nocache' ? 'no caches' : 'no upgrades'}
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="money-block">
@@ -58,8 +136,10 @@ export default function Dashboard() {
       <div className="gauges">
         <div
           className={`gauge ${dropShare > 0.02 ? 'glow-bad' : 'glow-ok'}`}
-          title="Throughput: requests served per second vs. what the market offers. Drops are requests that failed — lost revenue, damaged reputation."
+          title="Throughput. Click for the why."
+          onClick={gaugeWhy('rps')}
         >
+          <Why k="rps" />
           <div className="gauge-label">
             <span>RPS served</span>
             {g.dropped > 0.1 && <span style={{ color: 'var(--bad)' }}>−{fmtNum(g.dropped)} drop</span>}
@@ -79,8 +159,10 @@ export default function Dashboard() {
 
         <div
           className={`gauge ${g.p95 <= BAL.slaTargetMs ? 'glow-ok' : g.p95 <= 700 ? 'glow-warn' : 'glow-bad'}`}
-          title="95% of user-facing requests finish faster than this (async jobs excluded). Percentiles beat averages: the slowest requests belong to your angriest users. Latency also decays revenue past ~220ms."
+          title="95th-percentile latency. Click for the why."
+          onClick={gaugeWhy('p95')}
         >
+          <Why k="p95" />
           <div className="gauge-label">
             <span>p95 latency</span>
             <span>slo {BAL.slaTargetMs}ms</span>
@@ -100,8 +182,10 @@ export default function Dashboard() {
 
         <div
           className={`gauge ${profitPos ? 'glow-ok' : 'glow-bad'}`}
-          title="Revenue from served requests minus infrastructure run cost. Over-provision and the bill eats you; under-provision and drops do."
+          title="Profit. Click for the why."
+          onClick={gaugeWhy('profit')}
         >
+          <Why k="profit" />
           <div className="gauge-label">
             <span>profit</span>
             <span>
@@ -125,8 +209,10 @@ export default function Dashboard() {
 
         <div
           className={`gauge ${g.uptime >= 99.9 ? 'glow-ok' : g.uptime >= 99 ? 'glow-warn' : 'glow-bad'}`}
-          title="Success ratio of completed requests, counted in nines: 99.9% still means 43 minutes of downtime a month. Reputation tracks this — and reputation is your growth rate."
+          title="Uptime. Click for the why."
+          onClick={gaugeWhy('uptime')}
         >
+          <Why k="uptime" />
           <div className="gauge-label">
             <span>uptime</span>
             <span>SLA 99.9</span>
@@ -167,7 +253,23 @@ export default function Dashboard() {
             <span className="mono">{sandboxDemand}</span>
           </label>
         )}
-        <div className="res-chip" title={`Research Points — generated by Prometheus (${g.rpPerSec.toFixed(2)}/s)`}>
+        {!sandbox && !caseId && (
+          <div
+            className="res-chip rival-chip"
+            title={`${rival.name} — your rival. Out-serve them when you raise for +${BAL.rivalBeatSp} SP.`}
+            style={{ color: g.served >= rival.rps ? 'var(--ok)' : 'var(--bad)' }}
+          >
+            <span className="v">{fmtNum(rival.rps)}</span>
+            <span className="k">{rival.name.slice(0, 10)}</span>
+          </div>
+        )}
+        <div
+          className="res-chip"
+          title="Research Points. Click for the why."
+          onClick={gaugeWhy('rp')}
+          style={{ position: 'relative', cursor: 'pointer' }}
+        >
+          <Why k="rp" />
           <span className="v rp">{fmtNum(rp)}</span>
           <span className="k">RP {g.rpPerSec > 0 ? `+${g.rpPerSec.toFixed(1)}/s` : ''}</span>
         </div>
@@ -184,6 +286,31 @@ export default function Dashboard() {
         </div>
 
         <div className="sep-v" />
+        <button
+          onClick={() => openModal('doctor')}
+          title="Architecture Doctor: a staff-engineer review of the live graph — prioritized, costed findings"
+        >
+          🩺
+        </button>
+        <button onClick={() => openModal('history')} title="Company history: timeline, records, postmortems" aria-label="History">
+          🕘
+        </button>
+        {!sandbox && !caseId && (
+          <button
+            onClick={startDrill}
+            disabled={!drillAvailable}
+            className={drillAvailable ? 'primary' : ''}
+            title={
+              drillRunning
+                ? 'Drill in progress — keep drops under 3%'
+                : drillAvailable
+                  ? `Daily chaos drill: 3 minutes of scripted failure. Streak: ${drill.streak}`
+                  : `Drill done for today. Streak: ${drill.streak} — come back tomorrow.`
+            }
+          >
+            🔥{drill.streak > 0 ? drill.streak : ''}
+          </button>
+        )}
         <button
           onClick={() => openModal('tiers')}
           disabled={Boolean(caseId)}

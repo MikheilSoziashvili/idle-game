@@ -5,21 +5,25 @@ import NodePalette from './components/panels/NodePalette';
 import Inspector from './components/panels/Inspector';
 import EventLog from './components/panels/EventLog';
 import BlueprintBar from './components/panels/BlueprintBar';
+import ContractsBoard from './components/panels/ContractsBoard';
 import Toolbar from './components/tools/Toolbar';
 import OverlaySwitcher from './components/tools/OverlaySwitcher';
 import Objectives from './components/hud/Objectives';
 import Toasts from './components/hud/Toasts';
 import Modals from './components/hud/Modals';
 import LessonCard from './components/hud/LessonCard';
+import PostmortemCard from './components/hud/PostmortemCard';
+import TutorialCard from './components/hud/TutorialCard';
 import CaseHud from './components/hud/CaseHud';
 import { unlockedTools, useGame } from './game/state/store';
-import { tryLoad, saveNow } from './game/state/save';
+import { tryLoad, saveNow, offlineStory } from './game/state/save';
 import { startEngine } from './game/engine/simulation';
 import { fmtMoney } from './game/engine/balance';
 import type { Tool } from './game/engine/types';
 
 const TOOL_KEYS: Record<string, Tool> = {
   v: 'move',
+  s: 'select',
   w: 'wire',
   z: 'zone',
   r: 'region',
@@ -41,20 +45,18 @@ export default function App() {
       if (res.loaded) {
         if (res.offlineEarnings > 0) {
           const hrs = res.awaySec / 3600;
+          const story = offlineStory(hrs);
           s.addToast(
             'ok',
             'While you were away',
-            `${hrs >= 1 ? `${hrs.toFixed(1)}h` : `${Math.round(res.awaySec / 60)}min`} of traffic served itself: +${fmtMoney(res.offlineEarnings)} (50% efficiency, capped at 8h).`,
+            `${hrs >= 1 ? `${hrs.toFixed(1)}h` : `${Math.round(res.awaySec / 60)}min`} of traffic served itself: +${fmtMoney(res.offlineEarnings)} (50% efficiency, capped at 8h).${story ? ` ${story}` : ''}`,
           );
         } else {
           s.addToast('info', 'Welcome back', 'State restored from autosave.');
         }
       } else {
-        s.addToast(
-          'info',
-          'You are the platform team now',
-          'Drag an Nginx from the palette onto the canvas, then wire the Internet to it.',
-        );
+        // brand-new player: hand the reins to the interactive tutorial
+        s.setTutorialStep(0);
       }
     }
     startEngine(useGame);
@@ -132,6 +134,7 @@ export default function App() {
         <FlowCanvas />
         <Toolbar />
         <Objectives />
+        <ContractsBoard />
         <CaseHud />
         <NodePalette />
         <Inspector />
@@ -139,6 +142,7 @@ export default function App() {
         <EventLog />
         <BlueprintBar />
         <LessonCard />
+        <PostmortemCard />
         <Toasts />
         <Modals />
       </main>

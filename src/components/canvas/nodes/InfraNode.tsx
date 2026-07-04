@@ -1,5 +1,5 @@
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
-import { BAL, fmtNum } from '../../../game/engine/balance';
+import { BAL, fmtNum, masteryTier } from '../../../game/engine/balance';
 import type { NodeKind } from '../../../game/engine/types';
 import { CATEGORY_INFO, SPECS } from '../../../game/catalog/nodes';
 import { useGame } from '../../../game/state/store';
@@ -11,6 +11,7 @@ export interface InfraData extends Record<string, unknown> {
   level: number;
   disabled: boolean;
   wireFlag: boolean;
+  label?: string;
 }
 export type InfraNodeType = Node<InfraData, 'infra'>;
 
@@ -19,6 +20,7 @@ export default function InfraNode({ id, data, selected }: NodeProps<InfraNodeTyp
   const cat = CATEGORY_INFO[spec.category];
   const live = useGame((s) => s.live.nodeStats[id]);
   const overlay = useGame((s) => s.overlay);
+  const mastery = useGame((s) => masteryTier(s.stats.servedByKind?.[data.kind] ?? 0));
 
   const ov = overlayValue(overlay, live);
   const util = live?.util ?? 0;
@@ -39,6 +41,7 @@ export default function InfraNode({ id, data, selected }: NodeProps<InfraNodeTyp
         unhealthy ? 'unhealthy' : '',
         ov ? 'overlay-active' : '',
         selected ? 'selected' : '',
+        mastery > 0 ? `mastery-${mastery}` : '',
       ].join(' ')}
       style={
         {
@@ -54,7 +57,7 @@ export default function InfraNode({ id, data, selected }: NodeProps<InfraNodeTyp
         <span className="node-logo" title={spec.short}>
           <BrandIcon kind={data.kind} size={15} />
         </span>
-        <span className="node-name">{spec.name}</span>
+        <span className="node-name" title={data.label ? spec.name : undefined}>{data.label ?? spec.name}</span>
         {!isSource && !observ && (
           <span className="node-pips" title={`level ${data.level}/${BAL.maxLevel}`}>
             {Array.from({ length: BAL.maxLevel }, (_, i) => (
@@ -156,6 +159,16 @@ export default function InfraNode({ id, data, selected }: NodeProps<InfraNodeTyp
           title={`${p.label} (${p.type})`}
         />
       ))}
+
+      {/* whole-card wiring: invisible handles resolved to the best port pair.
+          any-in is a pure drop target (never intercepts the pointer); any-out
+          becomes grabbable in wire mode so you can drag node → node anywhere. */}
+      {ins.length > 0 && (
+        <Handle id="any-in" type="target" position={Position.Left} className="port-any" isConnectableStart={false} />
+      )}
+      {outs.length > 0 && (
+        <Handle id="any-out" type="source" position={Position.Right} className="port-any port-any-out" isConnectableEnd={false} />
+      )}
     </div>
   );
 }

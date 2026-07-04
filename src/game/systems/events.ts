@@ -26,13 +26,14 @@ export class EventSystem {
   active: ActiveEvent[] = [];
   nextAt: number = BAL.firstEventAt;
   firedScripted = false;
+  private easedOnce = false;
   // spike survival tracking
   spikeOffered = 0;
   spikeDropped = 0;
   spikeSurvivedFlag = false; // consumed by the engine for milestone/achievement
 
   update(
-    st: Pick<GameStore, 'simTime' | 'lifetimeRev' | 'regions' | 'nodes' | 'research' | 'sandbox'>,
+    st: Pick<GameStore, 'simTime' | 'lifetimeRev' | 'regions' | 'nodes' | 'research' | 'sandbox' | 'live' | 'cash' | 'mandate'>,
     logger: EventLogger,
     noRandom = false,
   ): EventEffects {
@@ -46,10 +47,21 @@ export class EventSystem {
       badDeployZone: null,
     };
 
-    // Schedule (random events pause in sandbox and during case studies)
+    // Schedule (random events pause in sandbox and during case studies).
+    // Adaptive pressure: the market reads the room — struggling players get
+    // longer gaps and gentler spikes, cruising players get less slack.
     if (t >= this.nextAt && !st.sandbox && !noRandom) {
-      this.spawn(st, logger);
-      this.nextAt = t + BAL.eventMinGap + Math.random() * (BAL.eventMaxGap - BAL.eventMinGap);
+      const uptime = st.live.gauges.uptime;
+      const struggling = uptime < BAL.pressureLowUptime || st.cash < BAL.pressureLowCash;
+      const thriving = uptime > BAL.pressureHighUptime && st.cash > BAL.pressureHighCash;
+      let gapMult = struggling ? BAL.pressureEasyGapMult : thriving ? BAL.pressureHardGapMult : 1;
+      if (st.mandate === 'blitzscale') gapMult *= 0.65;
+      if (struggling && !this.easedOnce) {
+        this.easedOnce = true;
+        logger.log('info', 'the market senses weakness — and, mercifully, looks away for a while');
+      }
+      this.spawn(st, logger, struggling);
+      this.nextAt = t + (BAL.eventMinGap + Math.random() * (BAL.eventMaxGap - BAL.eventMinGap)) * gapMult;
     }
 
     // Warnings + starts + effects + expiry
@@ -80,6 +92,7 @@ export class EventSystem {
   private spawn(
     st: Pick<GameStore, 'simTime' | 'lifetimeRev' | 'regions' | 'nodes' | 'research' | 'sandbox'>,
     logger: EventLogger,
+    gentleBias = false,
   ) {
     const t = st.simTime;
     const incidentsUnlocked = st.lifetimeRev >= BAL.incidentsAfterRevenue;
@@ -97,9 +110,10 @@ export class EventSystem {
     const id = eventCounter++;
     switch (kind) {
       case 'spike': {
-        const mult = gentle
+        let mult = gentle
           ? 2.0
           : BAL.spikeMult[0] + Math.random() * (BAL.spikeMult[1] - BAL.spikeMult[0]);
+        if (gentleBias) mult = Math.min(mult, BAL.pressureEasySpikeCap);
         const dur = BAL.spikeDurSec[0] + Math.random() * (BAL.spikeDurSec[1] - BAL.spikeDurSec[0]);
         const labels = ['Product Hunt launch', 'Hacker News frontpage', 'viral tweet', 'influencer shout-out'];
         this.active.push({
@@ -173,7 +187,7 @@ export class EventSystem {
         break;
       case 'db_slow':
         logger.log('err', 'INCIDENT slow query storm — database capacity −55%');
-        logger.toast('warn', 'Incident: slow query storm', 'Postgres capacity −55%. Caches and replicas soften the blow.');
+        logger.toast('warn', 'Incident: slow query storm', 'Database capacity −55%. Caches and replicas soften the blow.');
         break;
       case 'dep_failure':
         logger.log('err', `INCIDENT ${ev.label} — +${BAL.depFailLatencyMs}ms on every response`);

@@ -12,6 +12,7 @@ export default function PacketEdge(props: EdgeProps) {
   const { id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, selected, data } = props;
   const live = useGame((s) => s.live.edgeStats[id]);
   const speed = useGame((s) => s.speed);
+  const onDropPath = useGame((s) => s.live.dropPathEdges.includes(id));
   const reduced = useReducedMotion();
 
   const [path, labelX, labelY] = getSmoothStepPath({
@@ -53,10 +54,10 @@ export default function PacketEdge(props: EdgeProps) {
       <BaseEdge
         id={id}
         path={path}
-        className="rf-packet-path"
+        className={`rf-packet-path ${onDropPath ? 'drop-path' : ''}`}
         style={{
           stroke: color,
-          strokeWidth: width,
+          strokeWidth: onDropPath ? Math.max(width, 2.2) : width,
           opacity: active ? 0.95 : 0.55,
           strokeDasharray: reduced && active ? '7 5' : undefined,
         }}

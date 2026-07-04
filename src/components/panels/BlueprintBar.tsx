@@ -3,7 +3,19 @@ import { STARTER_BLUEPRINTS } from '../../game/catalog/blueprints';
 import { specOf } from '../../game/catalog/nodes';
 import { BAL, fmtMoney, totalSpentAtLevel } from '../../game/engine/balance';
 import type { Blueprint } from '../../game/engine/types';
+import { exportBlueprintCode, importBlueprintCode } from '../../game/state/save';
 import { isKindUnlocked, unlockedTools, useGame } from '../../game/state/store';
+
+async function copyCode(bp: Blueprint) {
+  const code = exportBlueprintCode(bp);
+  if (!code) return;
+  try {
+    await navigator.clipboard.writeText(code);
+    useGame.getState().addToast('ok', `Code copied: ${bp.name}`, 'Paste it to anyone — they import it right here.');
+  } catch {
+    window.prompt('Copy this blueprint code:', code);
+  }
+}
 
 function bpCost(bp: Blueprint): number {
   return bp.nodes.reduce((acc, bn) => {
@@ -24,6 +36,8 @@ export default function BlueprintBar() {
   const milestones = useGame((s) => s.milestones);
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [importStr, setImportStr] = useState('');
 
   const stampUnlocked = unlockedTools({ sandbox, research, milestones }).includes('stamp');
   const unlockState = { sandbox, research, allTimeRev, lifetimeRev };
@@ -54,19 +68,70 @@ export default function BlueprintBar() {
           {bp.name}
           <small style={{ color: 'var(--faint)' }}>{fmtMoney(bpCost(bp))}</small>
           {!bp.builtin && (
-            <span
-              className="bp-x"
-              title="Delete blueprint"
-              onClick={(e) => {
-                e.stopPropagation();
-                useGame.getState().removeBlueprint(bp.id);
-              }}
-            >
-              ✕
-            </span>
+            <>
+              <span
+                className="bp-x"
+                title="Copy share code (UPBP1.…)"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void copyCode(bp);
+                }}
+              >
+                ⧉
+              </span>
+              <span
+                className="bp-x"
+                title="Delete blueprint"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  useGame.getState().removeBlueprint(bp.id);
+                }}
+              >
+                ✕
+              </span>
+            </>
           )}
         </span>
       ))}
+      {importing ? (
+        <span style={{ display: 'inline-flex', gap: 4 }}>
+          <input
+            type="text"
+            autoFocus
+            placeholder="UPBP1.…"
+            value={importStr}
+            onChange={(e) => setImportStr(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                if (importBlueprintCode(importStr)) {
+                  setImporting(false);
+                  setImportStr('');
+                } else {
+                  useGame.getState().addToast('warn', 'Import failed', 'Not a valid blueprint code.');
+                }
+              }
+              if (e.key === 'Escape') setImporting(false);
+            }}
+            style={{ width: 150 }}
+          />
+          <button
+            onClick={() => {
+              if (importBlueprintCode(importStr)) {
+                setImporting(false);
+                setImportStr('');
+              } else {
+                useGame.getState().addToast('warn', 'Import failed', 'Not a valid blueprint code.');
+              }
+            }}
+          >
+            import
+          </button>
+        </span>
+      ) : (
+        <button onClick={() => setImporting(true)} title="Paste a UPBP1. code from another player">
+          ⤓ import
+        </button>
+      )}
       {selection.length > 0 &&
         (naming ? (
           <span style={{ display: 'inline-flex', gap: 4 }}>

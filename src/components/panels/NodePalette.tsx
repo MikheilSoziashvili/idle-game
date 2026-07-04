@@ -4,8 +4,10 @@ import { NODE_LEARN } from '../../game/catalog/lessons';
 import { researchById } from '../../game/catalog/research';
 import BrandIcon from '../BrandIcon';
 import type { NodeKind, NodeSpec } from '../../game/engine/types';
-import { isKindUnlocked, useGame } from '../../game/state/store';
-import { fmtMoney } from '../../game/engine/balance';
+import { constraintBlocks, isKindUnlocked, useGame } from '../../game/state/store';
+import { fmtMoney, masteryTier } from '../../game/engine/balance';
+
+const MEDALS = ['', '🥉', '🥈', '🥇'];
 
 export default function NodePalette() {
   const open = useGame((s) => s.paletteOpen);
@@ -15,6 +17,10 @@ export default function NodePalette() {
   const research = useGame((s) => s.research);
   const revProgress = useGame((s) => s.allTimeRev + s.lifetimeRev);
   const nodes = useGame((s) => s.nodes);
+  const runConstraint = useGame((s) => s.runConstraint);
+  const servedByKind = useGame((s) => s.stats.servedByKind);
+  const setDragKind = useGame((s) => s.setDragKind);
+  const tutPulseNginx = useGame((s) => s.tutorialStep === 1);
 
   const grouped = useMemo(() => {
     const byCat = new Map<string, NodeSpec[]>();
@@ -51,27 +57,34 @@ export default function NodePalette() {
                 {specs.map((spec) => {
                   const unlocked = isKindUnlocked(revProgressState, spec.kind);
                   const singleton = spec.singleton && nodes.some((n) => n.kind === spec.kind);
+                  const constrained = constraintBlocks(runConstraint, spec.kind);
                   const affordable = sandbox || cash >= spec.cost;
-                  const lockReason = !unlocked
-                    ? spec.research
-                      ? `Research: ${researchById.get(spec.research)?.name ?? spec.research}`
-                      : spec.revGate
-                        ? `Unlocks at ${fmtMoney(spec.revGate)} lifetime revenue (${Math.min(100, Math.round((revProgress / spec.revGate) * 100))}%)`
-                        : 'Locked'
-                    : singleton
-                      ? 'Already deployed (singleton)'
-                      : null;
+                  const mastery = masteryTier(servedByKind?.[spec.kind] ?? 0);
+                  const lockReason = constrained
+                    ? constrained
+                    : !unlocked
+                      ? spec.research
+                        ? `Research: ${researchById.get(spec.research)?.name ?? spec.research}`
+                        : spec.revGate
+                          ? `Unlocks at ${fmtMoney(spec.revGate)} lifetime revenue (${Math.min(100, Math.round((revProgress / spec.revGate) * 100))}%)`
+                          : 'Locked'
+                      : singleton
+                        ? 'Already deployed (singleton)'
+                        : null;
+                  const usable = unlocked && !singleton && !constrained;
                   return (
                     <div
                       key={spec.kind}
-                      className={`pal-item ${!unlocked || singleton ? 'locked' : ''} ${!affordable ? 'unaffordable' : ''}`}
-                      draggable={unlocked && !singleton}
+                      className={`pal-item ${!usable ? 'locked' : ''} ${!affordable ? 'unaffordable' : ''} ${tutPulseNginx && spec.kind === 'nginx' ? 'tut-pulse' : ''}`}
+                      draggable={usable}
                       onDragStart={(e) => {
                         e.dataTransfer.setData('application/uptime', spec.kind);
                         e.dataTransfer.effectAllowed = 'copy';
+                        setDragKind(spec.kind);
                       }}
+                      onDragEnd={() => setDragKind(null)}
                       onDoubleClick={() => {
-                        if (unlocked && !singleton) placeAtCenter(spec.kind);
+                        if (usable) placeAtCenter(spec.kind);
                       }}
                       title={
                         lockReason ??
@@ -82,10 +95,25 @@ export default function NodePalette() {
                         <BrandIcon kind={spec.kind} size={17} />
                       </span>
                       <span className="pal-name">
-                        <b>{spec.name}</b>
+                        <b>
+                          {spec.name}
+                          {mastery > 0 && <span title={`mastery: +${2 * mastery}% capacity`}> {MEDALS[mastery]}</span>}
+                        </b>
                         <small>{lockReason ?? spec.blurb}</small>
                       </span>
                       <span className="pal-cost">{spec.cost > 0 ? fmtMoney(spec.cost) : 'free'}</span>
+                      <a
+                        className="pal-docs"
+                        href={spec.docsUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title={`Official ${spec.name} documentation`}
+                        draggable={false}
+                        onClick={(e) => e.stopPropagation()}
+                        onDoubleClick={(e) => e.stopPropagation()}
+                      >
+                        ↗
+                      </a>
                     </div>
                   );
                 })}

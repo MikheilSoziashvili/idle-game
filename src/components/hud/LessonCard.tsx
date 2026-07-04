@@ -11,6 +11,8 @@ export default function LessonCard() {
   const seen = useGame((s) => s.lessonsSeen);
   const queued = useGame((s) => s.lessonQueue.length);
   const dismiss = useGame((s) => s.dismissLesson);
+  // the tutorial owns the bottom-center slot while it runs; notes stay queued
+  const tutorialActive = useGame((s) => s.tutorialStep >= 0);
 
   useEffect(() => {
     if (!activeLesson) return;
@@ -26,7 +28,7 @@ export default function LessonCard() {
     return () => window.removeEventListener('keydown', onKey);
   }, [activeLesson, dismiss]);
 
-  if (!activeLesson) return null;
+  if (!activeLesson || tutorialActive) return null;
   const lesson = lessonById.get(activeLesson);
   if (!lesson) return null;
 

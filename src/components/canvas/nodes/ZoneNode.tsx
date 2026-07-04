@@ -104,6 +104,12 @@ export default function ZoneNode({ id, data, selected }: NodeProps<ZoneNodeType>
           title={`${p.label} (${p.type})`}
         />
       ))}
+
+      {/* whole-card wiring targets/sources (see InfraNode) */}
+      <Handle id="any-in" type="target" position={Position.Left} className="port-any" isConnectableStart={false} />
+      {outs.length > 0 && (
+        <Handle id="any-out" type="source" position={Position.Right} className="port-any port-any-out" isConnectableEnd={false} />
+      )}
     </div>
   );
 }

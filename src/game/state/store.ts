@@ -9,9 +9,13 @@ import {
 import type {
   ActiveEvent,
   Blueprint,
+  ContractInstance,
+  DrillState,
   EdgeLive,
   Gauges,
+  HistoryEntry,
   LogEntry,
+  MandateId,
   NodeKind,
   NodeLive,
   Overlay,
@@ -19,7 +23,10 @@ import type {
   PlacedEdge,
   PlacedNode,
   PortType,
+  Postmortem,
   RegionRect,
+  RivalState,
+  RunConstraint,
   Tool,
   ZoneState,
 } from '../engine/types';
@@ -30,7 +37,9 @@ import { researchById } from '../catalog/research';
 import { milestoneById } from '../catalog/milestones';
 import { MILESTONES } from '../catalog/milestones';
 import { achievementById } from '../catalog/achievements';
-import { caseById } from '../catalog/casestudies';
+import type { CaseDef } from '../catalog/casestudies';
+import { resolveCase } from '../catalog/challenge';
+import { mandateById } from '../catalog/mandates';
 
 // ---------------------------------------------------------------------------
 
@@ -69,6 +78,7 @@ export interface LiveState {
   edgeStats: Record<string, EdgeLive>;
   events: ActiveEvent[];
   demandMult: number;
+  dropPathEdges: string[]; // edges upstream of a dropping node (bottleneck breadcrumbs)
 }
 
 export interface GameStats {
@@ -80,6 +90,11 @@ export interface GameStats {
   autoScaleActions: number;
   bestProfitPerSec: number;
   fourNinesStreak: number;
+  servedByKind: Record<string, number>; // lifetime, drives node mastery
+  contractsCompleted: number;
+  contractsFailed: number;
+  drillsCompleted: number;
+  incidentsSurvived: number;
 }
 
 const emptyGauges = (): Gauges => ({
@@ -101,9 +116,10 @@ const emptyLive = (): LiveState => ({
   edgeStats: {},
   events: [],
   demandMult: 1,
+  dropPathEdges: [],
 });
 
-const emptyStats = (): GameStats => ({
+export const emptyStats = (): GameStats => ({
   peakServed: 0,
   totalServed: 0,
   totalDropped: 0,
@@ -112,6 +128,17 @@ const emptyStats = (): GameStats => ({
   autoScaleActions: 0,
   bestProfitPerSec: 0,
   fourNinesStreak: 0,
+  servedByKind: {},
+  contractsCompleted: 0,
+  contractsFailed: 0,
+  drillsCompleted: 0,
+  incidentsSurvived: 0,
+});
+
+const RIVAL_NAMES = ['blitzr.io', 'hypershard', 'scaleworks', 'deploydeploy', 'nulltrace', 'the YC batchmate'];
+const rollRival = (): RivalState => ({
+  name: RIVAL_NAMES[Math.floor(Math.random() * RIVAL_NAMES.length)],
+  rps: 3 + Math.random() * 4,
 });
 
 export interface GameStore {
@@ -151,11 +178,30 @@ export interface GameStore {
   activeLesson: string | null;
   lessonQueue: string[];
 
+  // --- tutorial ---
+  // -2 = never offered (old saves), -1 = done/skipped, >=0 = active step.
+  // Steps advance by watching game state, not by "Next" alone.
+  tutorialStep: number;
+
   // --- case studies ---
   caseId: string | null;
   caseStatus: 'running' | 'passed' | 'failed' | null;
   caseObjectives: Record<string, { held: number; done: boolean }>;
   casesCompleted: string[];
+  customCases: CaseDef[]; // player-imported challenges
+
+  // --- live-ops layer ---
+  contractOffers: ContractInstance[];
+  activeContract: ContractInstance | null;
+  contractsRefreshAt: number; // simTime of next board roll
+  postmortems: Postmortem[]; // this-run archive, newest first
+  activePostmortem: Postmortem | null; // card currently shown
+  drill: DrillState;
+  history: HistoryEntry[]; // company timeline (real time)
+  mandate: MandateId | null; // active board mandate for this run
+  rival: RivalState;
+  runConstraint: RunConstraint;
+  insuranceUsed: boolean; // first-bottleneck rep protection consumed
 
   // --- live (engine-written) ---
   live: LiveState;
@@ -167,7 +213,8 @@ export interface GameStore {
   selection: string[];
   selEdges: string[];
   speed: 0 | 1 | 2 | 4;
-  modal: null | 'research' | 'prestige' | 'settings' | 'help' | 'tiers' | 'cases' | 'casedone';
+  dragKind: Exclude<NodeKind, 'zone'> | null; // palette item being dragged (what-if ghost)
+  modal: null | 'research' | 'prestige' | 'settings' | 'help' | 'tiers' | 'cases' | 'casedone' | 'doctor' | 'history' | 'caseeditor';
   confirm: ConfirmRequest | null;
   pendingBlueprint: string | null;
   pendingZoneTemplate: Exclude<NodeKind, 'zone'> | null;
@@ -200,7 +247,7 @@ export interface GameStore {
   buyResearch: (id: string) => void;
   launchTier: (id: number) => void;
   collectAR: () => void;
-  doPrestige: () => void;
+  doPrestige: (nextMandate?: MandateId | null) => void;
   buyPerk: (perk: PerkId) => void;
   saveBlueprintFromSelection: (name: string) => void;
   applyBlueprint: (bpId: string, x: number, y: number) => boolean;
@@ -212,11 +259,29 @@ export interface GameStore {
   grantAchievement: (id: string) => void;
   showLesson: (id: string) => void;
   dismissLesson: () => void;
+  setTutorialStep: (n: number) => void;
   markSaved: (t: number) => void;
   enterCase: (id: string) => void;
   exitCase: (passed: boolean) => void;
   retryCase: () => void;
   setCaseProgress: (objectives: Record<string, { held: number; done: boolean }>, status: 'running' | 'passed' | 'failed') => void;
+
+  // --- actions: live-ops ---
+  setNodeLabel: (id: string, label: string) => void;
+  acceptContract: (id: string) => void;
+  setContractState: (patch: { offers?: ContractInstance[]; active?: ContractInstance | null; refreshAt?: number }) => void;
+  completeContract: () => void;
+  failContract: () => void;
+  startDrill: () => void;
+  finishDrill: (passed: boolean, dropShare: number) => void;
+  pushPostmortem: (pm: Postmortem) => void;
+  dismissPostmortem: () => void;
+  setRival: (rps: number) => void;
+  markInsuranceUsed: () => void;
+  pushHistory: (icon: string, label: string) => void;
+  addCustomCase: (def: CaseDef) => boolean;
+  removeCustomCase: (id: string) => void;
+  setDragKind: (k: Exclude<NodeKind, 'zone'> | null) => void;
 
   // --- actions: ui ---
   setTool: (t: Tool) => void;
@@ -236,7 +301,16 @@ export interface GameStore {
   setSandboxDemand: (v: number) => void;
   setSettings: (patch: Partial<GameStore['settings']>) => void;
   loadState: (partial: Partial<GameStore>) => void;
-  newGame: (sandbox: boolean) => void;
+  newGame: (sandbox: boolean, constraint?: RunConstraint) => void;
+}
+
+/** Reason a kind can't be placed under the active run constraint, or null. */
+export function constraintBlocks(constraint: RunConstraint, kind: NodeKind): string | null {
+  if (constraint === 'serverless' && ['app', 'spot', 'worker'].includes(kind))
+    return 'Serverless-only run: no servers to hug. Lambda is your compute.';
+  if (constraint === 'nocache' && ['redis', 'memcached', 'varnish', 'cdn', 'fastly'].includes(kind))
+    return 'No-cache run: every request earns its round trip.';
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +372,14 @@ function freshRunState() {
     pendingBlueprint: null,
     pendingZoneTemplate: null,
     lastRemovedEdges: [] as PlacedEdge[],
+    // live-ops: contracts + postmortems are per-run; a new run rolls a new rival
+    contractOffers: [] as ContractInstance[],
+    activeContract: null as ContractInstance | null,
+    contractsRefreshAt: 0,
+    postmortems: [] as Postmortem[],
+    activePostmortem: null as Postmortem | null,
+    rival: rollRival(),
+    dragKind: null as Exclude<NodeKind, 'zone'> | null,
   };
 }
 
@@ -320,10 +402,17 @@ export const useGame = create<GameStore>()((set, get) => ({
   lessonsSeen: [],
   activeLesson: null,
   lessonQueue: [],
+  tutorialStep: -2,
   caseId: null,
   caseStatus: null,
   caseObjectives: {},
   casesCompleted: [],
+  customCases: [],
+  drill: { streak: 0, lastDay: '', activeUntil: 0 },
+  history: [],
+  mandate: null,
+  runConstraint: 'none',
+  insuranceUsed: false,
   speed: 1,
   modal: null,
   confirm: null,
@@ -337,6 +426,11 @@ export const useGame = create<GameStore>()((set, get) => ({
     const s = get();
     if (kind === 'zone' || kind === 'users') return null;
     const spec = SPECS[kind];
+    const blocked = constraintBlocks(s.runConstraint, kind);
+    if (blocked) {
+      s.addToast('warn', `${spec.name} is off-limits this run`, blocked);
+      return null;
+    }
     if (spec.singleton && s.nodes.some((n) => n.kind === kind)) {
       s.addToast('warn', `${spec.name} is a singleton`, 'One per company is plenty.');
       return null;
@@ -439,6 +533,10 @@ export const useGame = create<GameStore>()((set, get) => ({
 
   upgradeNodes: (ids) => {
     const s = get();
+    if (s.runConstraint === 'frugal') {
+      s.addToast('warn', 'Shoestring run: upgrades disabled', 'Level 1 hardware only — scale OUT, not up.');
+      return;
+    }
     const discount = s.nodes.some((n) => n.kind === 'cicd') ? BAL.cicdUpgradeDiscount : 1;
     let cash = s.cash;
     let upgraded = 0;
@@ -463,6 +561,11 @@ export const useGame = create<GameStore>()((set, get) => ({
     const s = get();
     const old = s.nodes.find((n) => n.id === id);
     if (!old || old.kind === 'users' || old.kind === 'zone') return;
+    const swapBlocked = constraintBlocks(s.runConstraint, kind);
+    if (swapBlocked) {
+      s.addToast('warn', 'Off-limits this run', swapBlocked);
+      return;
+    }
     const newSpec = SPECS[kind];
     const refund = Math.round(old.spent * BAL.refundRatio);
     const net = newSpec.cost - refund;
@@ -514,6 +617,11 @@ export const useGame = create<GameStore>()((set, get) => ({
     const s = get();
     const spec = SPECS[template];
     if (!spec.zoneUnit) return null;
+    const zoneBlocked = constraintBlocks(s.runConstraint, template);
+    if (zoneBlocked) {
+      s.addToast('warn', 'Off-limits this run', zoneBlocked);
+      return null;
+    }
     const cost = Math.round(spec.cost * BAL.zoneSpawnDiscount);
     if (!s.sandbox && s.cash < cost) {
       s.addToast('warn', 'Insufficient funds', `First ${spec.name} instance costs $${cost}.`);
@@ -627,6 +735,7 @@ export const useGame = create<GameStore>()((set, get) => ({
     }
     set({ cash: s.sandbox ? s.cash : s.cash - tier.cost, tiers: [...s.tiers, id] });
     s.addToast('milestone', `Launched: ${tier.name}`, 'New traffic mix incoming. Watch your gauges.');
+    s.pushHistory('▲', `Launched ${tier.name}`);
   },
 
   collectAR: () => {
@@ -635,17 +744,33 @@ export const useGame = create<GameStore>()((set, get) => ({
     set({ cash: s.cash + s.ar, ar: 0 });
   },
 
-  doPrestige: () => {
+  doPrestige: (nextMandate = null) => {
     const s = get();
-    const gain = Math.floor(Math.sqrt(Math.max(0, s.lifetimeRev) / BAL.spDivisor));
+    let gain = Math.floor(Math.sqrt(Math.max(0, s.lifetimeRev) / BAL.spDivisor));
     if (gain < BAL.prestigeMinSp) return;
+
+    // mandate bonus (this run's mandate pays out now) + rival bonus
+    const mandateBonus = s.mandate ? (mandateById.get(s.mandate)?.spBonus ?? 0) : 0;
+    if (mandateBonus > 0) gain = Math.floor(gain * (1 + mandateBonus));
+    const beatRival = s.live.gauges.served > s.rival.rps;
+    if (beatRival) gain += BAL.rivalBeatSp;
+
+    // constraint-run achievements: honored only when actually raising
+    if (s.runConstraint === 'serverless') s.grantAchievement('went-serverless');
+    if (s.runConstraint === 'nocache') s.grantAchievement('raw-dog-db');
+    if (s.runConstraint === 'frugal') s.grantAchievement('level-one-legend');
+    if (beatRival) s.grantAchievement('flippening');
+
     const spTotal = s.spTotal + gain;
+    const roundName = BAL.roundNames[roundForSp(spTotal)];
+    s.pushHistory('📈', `Raised ${roundName}: +${gain} SP${beatRival ? ` (out-served ${s.rival.name})` : ''}${s.mandate ? ` · ${mandateById.get(s.mandate)?.name} honored` : ''}`);
     set({
       ...freshRunState(),
       sp: s.sp + gain,
       spTotal,
       stats: { ...s.stats, prestiges: s.stats.prestiges + 1 },
       cash: BAL.startCash + s.spSpentOn.momentum * BAL.perkMomentumCash,
+      mandate: nextMandate,
       graphVersion: s.graphVersion + 1,
       runEpoch: s.runEpoch + 1,
       modal: null,
@@ -653,9 +778,13 @@ export const useGame = create<GameStore>()((set, get) => ({
     });
     get().addToast(
       'achievement',
-      `${BAL.roundNames[roundForSp(spTotal)]} closed`,
-      `Banked ${gain} Scale Points. The platform is gone; the knowledge isn't. Stamp your blueprints.`,
+      `${roundName} closed`,
+      `Banked ${gain} SP${beatRival ? ` (incl. +${BAL.rivalBeatSp} for out-serving ${s.rival.name})` : ''}${mandateBonus > 0 ? ` (incl. +${Math.round(mandateBonus * 100)}% mandate bonus)` : ''}. Stamp your blueprints.`,
     );
+    if (nextMandate) {
+      const m = mandateById.get(nextMandate);
+      if (m) get().addToast('info', `Board mandate: ${m.name}`, m.desc);
+    }
   },
 
   buyPerk: (perk) => {
@@ -711,6 +840,11 @@ export const useGame = create<GameStore>()((set, get) => ({
       cost += base;
       if (spec.singleton && s.nodes.some((n) => n.kind === bn.kind)) {
         s.addToast('warn', 'Blueprint blocked', `${spec.name} is a singleton and already exists.`);
+        return false;
+      }
+      const bpBlocked = constraintBlocks(s.runConstraint, bn.kind === 'zone' ? (bn.zone?.template ?? 'app') : bn.kind);
+      if (bpBlocked) {
+        s.addToast('warn', 'Blueprint blocked', bpBlocked);
         return false;
       }
     }
@@ -821,13 +955,16 @@ export const useGame = create<GameStore>()((set, get) => ({
     });
   },
 
+  setTutorialStep: (n) => set({ tutorialStep: n }),
+
   markSaved: (t) => set({ lastSaved: t }),
 
   // ------------------------------------------------------------ case studies --
   enterCase: (id) => {
     const s = get();
-    const def = caseById.get(id);
+    const def = resolveCase(id, s.customCases);
     if (!def || s.caseId) return;
+    if (def.requires && !s.casesCompleted.includes(def.requires)) return; // level locked
     // snapshot the campaign to localStorage first; autosave is suspended
     // while a case is running, so this snapshot survives until exit.
     void import('./save').then(({ saveNow }) => {
@@ -884,7 +1021,7 @@ export const useGame = create<GameStore>()((set, get) => ({
     const s = get();
     const id = s.caseId;
     if (!id) return;
-    const def = caseById.get(id);
+    const def = resolveCase(id, s.customCases);
     const lessonsFromCase = s.lessonsSeen;
     const completedBefore = s.casesCompleted;
     set({ caseId: null, caseStatus: null, caseObjectives: {}, modal: null, speed: 1 });
@@ -900,6 +1037,7 @@ export const useGame = create<GameStore>()((set, get) => ({
       });
       saveNow();
       if (passed && def) {
+        get().pushHistory(def.track === 'product' ? '🚢' : '✓', `${def.track === 'product' ? 'Shipped' : 'Closed'}: ${def.title} (+${def.rewardRp} RP)`);
         get().addToast('achievement', `Case closed: ${def.title}`, `+${def.rewardRp} RP banked to the company. Campaign restored.`);
       } else {
         get().addToast('info', 'Back to the company', 'Campaign restored from snapshot.');
@@ -925,6 +1063,134 @@ export const useGame = create<GameStore>()((set, get) => ({
       set({ caseObjectives: objectives });
     }
   },
+
+  // ---------------------------------------------------------------- live-ops --
+  setNodeLabel: (id, label) => {
+    set((s) => ({
+      nodes: s.nodes.map((n) => (n.id === id ? { ...n, label: label.trim() || undefined } : n)),
+      graphVersion: s.graphVersion + 1,
+    }));
+  },
+
+  acceptContract: (id) => {
+    const s = get();
+    if (s.activeContract) {
+      s.addToast('warn', 'One contract at a time', 'Finish (or fail) the active one first.');
+      return;
+    }
+    const offer = s.contractOffers.find((c) => c.id === id);
+    if (!offer) return;
+    set({
+      activeContract: { ...offer, held: 0, deadlineAt: s.simTime + BAL.contractDeadlineSec },
+      contractOffers: s.contractOffers.filter((c) => c.id !== id),
+    });
+    s.addToast('info', `Contract signed: ${offer.client}`, `${offer.label} — ${Math.round(BAL.contractDeadlineSec / 60)} min to deliver.`);
+  },
+
+  setContractState: (patch) => {
+    set((s) => ({
+      contractOffers: patch.offers ?? s.contractOffers,
+      activeContract: patch.active !== undefined ? patch.active : s.activeContract,
+      contractsRefreshAt: patch.refreshAt ?? s.contractsRefreshAt,
+    }));
+  },
+
+  completeContract: () => {
+    const s = get();
+    const c = s.activeContract;
+    if (!c) return;
+    set({
+      activeContract: null,
+      cash: s.cash + c.rewardCash,
+      rp: s.rp + c.rewardRp,
+      rep: Math.min(BAL.repMax, s.rep + c.repBonus),
+    });
+    const n = s.stats.contractsCompleted + 1; // engine increments the stat itself
+    if (n === 1 || n % 5 === 0) s.pushHistory('✍', `SLA contract #${n} delivered (${c.client})`);
+    s.addToast('milestone', 'Contract delivered', `${c.label} — +$${c.rewardCash}, +${c.rewardRp} RP, +${c.repBonus} rep.`);
+  },
+
+  failContract: () => {
+    const s = get();
+    const c = s.activeContract;
+    if (!c) return;
+    set({
+      activeContract: null,
+      rep: Math.max(BAL.repMin, s.rep - c.repPenalty),
+    });
+    s.addToast('warn', 'Contract failed', `${c.client} walks. −${c.repPenalty} reputation.`);
+  },
+
+  startDrill: () => {
+    const s = get();
+    const today = new Date().toISOString().slice(0, 10);
+    if (s.sandbox || s.caseId || s.drill.activeUntil > s.simTime) return;
+    if (s.drill.lastDay === today) {
+      s.addToast('info', 'Drill already run today', `Streak: ${s.drill.streak}. Come back tomorrow.`);
+      return;
+    }
+    set({ drill: { ...s.drill, lastDay: today, activeUntil: s.simTime + BAL.drillDurSec } });
+    s.addToast('event', 'Chaos drill started', `${Math.round(BAL.drillDurSec / 60)} minutes of scripted failure. Keep drops under ${Math.round(BAL.drillPassDropShare * 100)}%.`);
+  },
+
+  finishDrill: (passed, dropShare) => {
+    const s = get();
+    const streak = passed ? s.drill.streak + 1 : 0;
+    const reward = passed ? BAL.drillBaseRp + BAL.drillStreakRp * Math.min(streak, 15) : 0;
+    set({
+      drill: { ...s.drill, streak, activeUntil: 0 },
+      rp: s.rp + reward,
+    });
+    if (passed) {
+      if (streak === 7) s.grantAchievement('fire-drill');
+      if (streak === 1 || streak % 5 === 0) s.pushHistory('🔥', `Chaos drill streak: ${streak}`);
+      s.addToast('achievement', `Drill survived (streak ${streak})`, `${(dropShare * 100).toFixed(1)}% dropped. +${reward} RP.`);
+    } else {
+      s.addToast('warn', 'Drill failed', `${(dropShare * 100).toFixed(1)}% dropped — streak resets. The real one would have hurt more.`);
+    }
+  },
+
+  pushPostmortem: (pm) => {
+    const s = get();
+    set({
+      postmortems: [pm, ...s.postmortems].slice(0, 12),
+      activePostmortem: s.activePostmortem ?? pm,
+    });
+  },
+
+  dismissPostmortem: () => set({ activePostmortem: null }),
+
+  setRival: (rps) => set((s) => ({ rival: { ...s.rival, rps } })),
+
+  markInsuranceUsed: () => {
+    const s = get();
+    if (s.insuranceUsed) return;
+    set({ insuranceUsed: true });
+    s.addToast(
+      'info',
+      'First-outage insurance',
+      `Your first bottleneck is on the house: reputation is protected for ${BAL.insuranceWindowSec}s. Next time it bleeds — fix the constraint.`,
+    );
+  },
+
+  pushHistory: (icon, label) => {
+    set((s) => ({ history: [{ at: Date.now(), icon, label }, ...s.history].slice(0, 60) }));
+  },
+
+  addCustomCase: (def) => {
+    const s = get();
+    if (s.customCases.some((c) => c.id === def.id)) {
+      s.addToast('info', 'Already imported', def.title);
+      return false;
+    }
+    set({ customCases: [def, ...s.customCases].slice(0, 20) });
+    s.addToast('ok', `Challenge imported: ${def.title}`, 'Find it under Cases → Community.');
+    return true;
+  },
+
+  removeCustomCase: (id) => set((s) => ({ customCases: s.customCases.filter((c) => c.id !== id) })),
+
+  setDragKind: (k) => set({ dragKind: k }),
 
   // -------------------------------------------------------------------- ui --
   setTool: (t) => set({ tool: t, pendingBlueprint: t === 'stamp' ? get().pendingBlueprint : null }),
@@ -954,7 +1220,7 @@ export const useGame = create<GameStore>()((set, get) => ({
 
   loadState: (partial) => set({ ...partial, graphVersion: get().graphVersion + 1, runEpoch: get().runEpoch + 1 }),
 
-  newGame: (sandbox) => {
+  newGame: (sandbox, constraint = 'none') => {
     const s = get();
     set({
       ...freshRunState(),
@@ -965,19 +1231,33 @@ export const useGame = create<GameStore>()((set, get) => ({
       milestones: sandbox ? ['first-wire', 'ten-rps', 'first-bottleneck', 'observability', 'first-cache', 'hands-off', 'tier-two', 'spike-survivor', 'auto-billing'] : [],
       achievements: s.achievements,
       blueprints: s.blueprints,
+      customCases: s.customCases,
       cash: sandbox ? 1e12 : BAL.startCash,
       sandbox,
-      research: sandbox ? ['containers', 'caching', 'gateway', 'autoscaling', 'queues', 'replicas', 'cdn', 'orchestration', 'obs2', 'serverless', 'mesh', 'multiregion', 'mlpipe'] : [],
+      research: sandbox ? ['containers', 'caching', 'gateway', 'autoscaling', 'queues', 'replicas', 'cdn', 'nosql', 'managed', 'orchestration', 'obs2', 'serverless', 'mesh', 'multiregion', 'mlpipe'] : [],
       tiers: sandbox ? [1, 2, 3, 4, 5, 6] : [1],
       stats: emptyStats(),
+      drill: { streak: 0, lastDay: '', activeUntil: 0 },
+      history: [],
+      mandate: null,
+      runConstraint: sandbox ? 'none' : constraint,
+      insuranceUsed: false,
       graphVersion: s.graphVersion + 1,
       runEpoch: s.runEpoch + 1,
       modal: null,
       speed: 1,
     });
+    const cNote =
+      constraint === 'serverless'
+        ? ' · Constraint: serverless-only'
+        : constraint === 'nocache'
+          ? ' · Constraint: no caches'
+          : constraint === 'frugal'
+            ? ' · Constraint: no upgrades'
+            : '';
     get().addToast(
       'info',
-      sandbox ? 'Sandbox: unlimited budget, everything unlocked' : 'New company founded',
+      sandbox ? 'Sandbox: unlimited budget, everything unlocked' : `New company founded${cNote}`,
       sandbox ? 'Use the demand slider in the dashboard to set traffic.' : 'Wire the Internet to a server to start serving.',
     );
   },
@@ -997,7 +1277,7 @@ export function isKindUnlocked(
 }
 
 export function unlockedTools(s: Pick<GameStore, 'sandbox' | 'research' | 'milestones'>): Tool[] {
-  const tools: Tool[] = ['move', 'wire', 'upgrade', 'bulldoze'];
+  const tools: Tool[] = ['move', 'select', 'wire', 'upgrade', 'bulldoze'];
   if (s.sandbox || s.research.includes('autoscaling')) tools.push('zone');
   if (s.sandbox || s.milestones.includes('tier-two')) tools.push('region', 'stamp');
   return tools;

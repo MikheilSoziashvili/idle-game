@@ -1,6 +1,6 @@
 import { BAL } from './balance';
 import { TIERS } from '../catalog/tiers';
-import { caseById } from '../catalog/casestudies';
+import { resolveCase } from '../catalog/challenge';
 import type { GameStore } from '../state/store';
 import type { GlobalMods } from './types';
 
@@ -39,23 +39,25 @@ export function computeDemand(st: GameStore, eventDemandMult: number, mods: Glob
 
   // Case studies pin demand: fixed base rps, scripted spikes multiply it.
   if (st.caseId) {
-    const def = caseById.get(st.caseId);
+    const def = resolveCase(st.caseId, st.customCases);
     if (def) {
       return { offered: def.baseRps * eventDemandMult, mix, value, latSensitive, atMarketCap: false };
     }
   }
 
   const round = Math.min(st.spTotal >= 0 ? roundIndex(st.spTotal) : 0, BAL.rpsCaps.length - 1);
+  const capMult = st.mandate === 'shoestring' ? 0.85 : 1; // shoestring: smaller round ceiling
+  const rpsCap = BAL.rpsCaps[round] * capMult;
   const rawOffered = st.sandbox
     ? st.sandboxDemand
     : st.scale * totalBase * mods.demandMult;
-  const capped = Math.min(rawOffered * eventDemandMult, st.sandbox ? Infinity : BAL.rpsCaps[round] * eventDemandMult);
+  const capped = Math.min(rawOffered * eventDemandMult, st.sandbox ? Infinity : rpsCap * eventDemandMult);
   return {
     offered: capped,
     mix,
     value,
     latSensitive,
-    atMarketCap: !st.sandbox && rawOffered >= BAL.rpsCaps[round] * 0.98,
+    atMarketCap: !st.sandbox && rawOffered >= rpsCap * 0.98,
   };
 }
 
@@ -76,8 +78,13 @@ export function computeMods(st: GameStore): GlobalMods {
   return {
     capacityMult:
       (1 + BAL.perkThroughput * st.spSpentOn.throughput) * (mesh ? BAL.meshCapacityMult : 1),
-    revenueMult: (1 + BAL.perkRevenue * st.spSpentOn.revenue) * (hasStripe ? BAL.stripeRevenueBonus : 1),
-    costMult: Math.max(0.3, 1 - BAL.perkEfficiency * st.spSpentOn.efficiency),
+    revenueMult:
+      (1 + BAL.perkRevenue * st.spSpentOn.revenue) *
+      (hasStripe ? BAL.stripeRevenueBonus : 1) *
+      (st.mandate === 'ironclad' ? 1.12 : 1),
+    costMult:
+      Math.max(0.3, 1 - BAL.perkEfficiency * st.spSpentOn.efficiency) *
+      (st.mandate === 'shoestring' ? 0.85 : 1),
     rpMult: (hasGrafana ? BAL.grafanaRpMult : 1) * (obs2 ? BAL.obs2RpMult : 1),
     bootTime: hasCicd ? BAL.bootTimeCicdSec : BAL.bootTimeSec,
     upgradeDiscount: hasCicd ? BAL.cicdUpgradeDiscount : 1,

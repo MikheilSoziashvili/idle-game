@@ -133,29 +133,53 @@ export const NODE_LEARN: Record<Exclude<NodeKind, 'zone'>, string> = {
   nginx:
     'A web server and reverse proxy that fronts a third of the web. It serves static files straight off disk and proxies dynamic requests upstream — the classic front door.',
   lb:
-    'Spreads requests across identical backends so you can scale horizontally. Real ones (AWS ELB, HAProxy) health-check their targets and route to the least loaded — if one box dies, traffic flows around it.',
+    'Spreads requests across identical backends so you can scale horizontally. Managed balancers (AWS ELB/ALB) health-check their targets and route to the least loaded — if one box dies, traffic flows around it.',
+  haproxy:
+    'The classic software load balancer: legendary raw throughput on a single box for almost nothing. The trade against a managed LB is operational — you run it, you patch it, and stock round-robin doesn\'t know which backend is drowning.',
   apigw:
     'A managed front door: authentication, routing and rate limiting per client. Its superpower is failing cheap — a fast 429 is kinder than a slow timeout, for you and the caller.',
   cdn:
     'A network of edge servers near users (Cloudflare runs in 300+ cities; CloudFront is the AWS equivalent). Static content is served from the closest one — a physics-level latency win no origin tuning can match.',
+  fastly:
+    'An edge network built for programmability: config deploys and cache purges land in seconds, so teams cache things others don\'t dare to — API responses, personalized pages. You pay per request for the privilege; heavy hitters negotiate.',
+  varnish:
+    'The self-hosted HTTP accelerator (it powered Wikipedia for years). Sits in front of your origin and absorbs repeated requests with zero per-request fees — but it lives in your rack, so distant users still pay the round trip a real edge network erases.',
   s3:
     'Object storage: effectively infinite capacity, eleven nines of durability, priced per request. The standard home for images, video and backups — usually with a CDN in front.',
   app:
     'Your code in a container on a box — an EC2 instance, in AWS terms. Kept stateless on purpose so you can run N identical copies; the state lives in the database, cache and queue, which is exactly what those ports are.',
+  spot:
+    'Spare cloud capacity sold at a steep discount — with the catch that the provider takes it back (with two minutes\' notice) whenever a full-price customer wants it. Real fleets run spot for stateless workloads with N+1 headroom and let the orchestrator absorb the churn.',
   lambda:
     'Functions-as-a-service: zero idle cost, self-scaling, pay per invocation. Ideal for spiky or rare workloads; at sustained volume, dedicated servers become cheaper. Beware cold starts.',
   redis:
-    'An in-memory store answering in microseconds. As a cache it absorbs the read traffic that would otherwise crush your database — the highest-leverage box in this catalog.',
+    'An in-memory store answering in microseconds, with real data structures (sorted sets, streams, pub/sub). As a cache it absorbs the read traffic that would otherwise crush your database — the highest-leverage box in this catalog.',
+  memcached:
+    'The original web cache: a flat key-value store in RAM, multithreaded and brutally simple. Cheaper per request than Redis, but no data structures means more logic your cache can\'t express — which in practice means more misses.',
   postgres:
-    'The system of record. Stateful and durable, therefore the hardest thing to scale — writes must be ordered and safely on disk. Shield it: cache the reads, replicate for fan-out, queue the bursts.',
+    'The system of record. Stateful and durable, therefore the hardest thing to scale — writes must be ordered and safely on disk. Shield it: cache the reads, replicate for fan-out, queue the bursts. The balanced default most teams should start with.',
+  mysql:
+    'The database that powered the early web (Facebook, YouTube and Wikipedia grew up on it). Fast, cheap, everywhere — the general trade against Postgres is weaker behavior under heavy concurrent writes and fewer advanced features.',
+  mssql:
+    'Microsoft\'s enterprise engine: an excellent optimizer and first-class tooling, priced by the core. The classic build-vs-buy trade — raw engine strength you pay for in licensing, forever, whether you use it or not.',
+  mongo:
+    'The document database: schema-on-read, JSON all the way down, writes spread easily. The trade for that flexibility is weaker relational guarantees — joins, transactions and strict consistency are where SQL engines still win.',
+  elastic:
+    'A search and analytics index, not a system of record. It answers full-text and aggregation queries a SQL database would grind on — at the price of eventual consistency, real RAM appetite, and needing a real database behind it for writes.',
   replica:
     "A read-only copy kept in sync from the primary's write-ahead log (WAL). Spreads reads across machines; writes still funnel to one place — the price of consistency.",
   queue:
-    'A durable log decoupling producers from consumers: write at spike speed, read at your own pace. This buffer is how real systems survive bursts without paying for peak capacity 24/7.',
+    'Kafka is a durable log decoupling producers from consumers: write at spike speed, read at your own pace, replay history. Built for firehose volume — the trade is operational weight; below serious scale, a simpler broker does the job for less.',
+  rabbitmq:
+    'The classic message broker: routing, priorities, per-message acks — simple to run and snappy at modest volume. The general trade against Kafka is buffer depth: when the backlog becomes a firehose, the durable log wins.',
+  sqs:
+    'The managed-queue trade taken to its end: nothing to operate, a practically bottomless buffer, and a bill that scales exactly with usage. Polling adds latency and per-message fees add up at volume — classic build-vs-buy.',
   worker:
     'Pulls jobs off the queue and grinds: emails, exports, ML batches. Workers pull rather than receive, so they never overload — add more to drain the backlog faster.',
   prometheus:
     "The de-facto standard metrics system: scrapes numbers from everything and answers 'what changed?'. Observability isn't optional — you cannot fix what you cannot see.",
+  datadog:
+    'Observability as a product: metrics, traces and logs correlated out of the box, no servers to run. Teams consistently learn more per request than with self-hosted tooling — then the invoice arrives. The build-vs-buy trade, in dashboard form.',
   grafana:
     'Dashboards over your metrics. The distance between data and insight is a good graph — every real ops room has a wall of these.',
   autoscaler:

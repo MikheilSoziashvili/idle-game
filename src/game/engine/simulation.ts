@@ -1,17 +1,23 @@
-import { BAL, latencyValueMult, pendingSp, levelCapMult, levelOpCostMult } from './balance';
+import { BAL, fmtNum, latencyValueMult, masteryTier, MASTERY_NAMES, pendingSp, levelCapMult, levelOpCostMult } from './balance';
 import { computeDemand, computeMods, roundIndex } from './economy';
-import { specOf } from '../catalog/nodes';
-import { caseById } from '../catalog/casestudies';
+import { DB_KINDS, specOf } from '../catalog/nodes';
+import { resolveCase } from '../catalog/challenge';
+import { rollContractOffers } from '../catalog/contracts';
 import type {
+  ActiveEvent,
   EdgeLive,
+  Gauges,
   GlobalMods,
   LogEntry,
   LogSev,
+  NodeKind,
   NodeLive,
   PortType,
+  Postmortem,
   RegionRect,
 } from './types';
-import type { GameStore, LiveState } from '../state/store';
+import type { GameStats, GameStore, LiveState } from '../state/store';
+import { emptyStats } from '../state/store';
 import { EventSystem } from '../systems/events';
 import { AutoscalerSystem } from '../systems/automation';
 import { readyInstances, bootingInstances, zoneHasController } from '../systems/zoning';
@@ -38,6 +44,7 @@ const CLASS_TIMEOUT_MS = [5000, 5000, 5000, 5000, 600000];
 interface SNode {
   id: string;
   kind: string;
+  name: string; // display name for logs (player label > zone name > spec name)
   level: number;
   health: number;
   utilSm: number;
@@ -143,6 +150,17 @@ export class Engine {
   // case-study runtime: which scripted events have been injected this run
   private caseInjected = new Set<string>();
 
+  // live-ops runtime
+  private insUntil = 0; // first-failure insurance window
+  private drillArmed = false;
+  private drillOffered = 0;
+  private drillDropped = 0;
+  private dropPath: string[] = []; // edge ids upstream of dropping nodes (1 Hz)
+  private pmWatch = new Map<number, { kind: ActiveEvent['kind']; label: string; t0: number; drop0: number; rep0: number }>();
+  private pmCounter = 1;
+  private masteryKnown = new Map<string, number>();
+  private lastPeakMark = 0;
+
   private stats!: GameStore['stats'];
   private lastPushedStats: GameStore['stats'] | null = null;
   private tickLogs: LogEntry[] = [];
@@ -150,9 +168,16 @@ export class Engine {
 
   constructor(store: typeof import('../state/store').useGame) {
     this.store = store;
-    this.stats = { ...store.getState().stats };
+    this.adoptStats(store.getState().stats);
     this.simTime = store.getState().simTime;
     this.runEpoch = store.getState().runEpoch;
+  }
+
+  /** Copy store stats, backfilling fields older saves don't have. */
+  private adoptStats(s: GameStats) {
+    this.stats = { ...emptyStats(), ...s, servedByKind: { ...(s.servedByKind ?? {}) } };
+    this.lastPeakMark = this.stats.peakServed;
+    this.masteryKnown.clear();
   }
 
   start() {
@@ -208,6 +233,7 @@ export class Engine {
       const sn: SNode = prev ?? {
         id: n.id,
         kind: n.kind,
+        name: n.id,
         level: n.level,
         health: 1,
         utilSm: 0,
@@ -281,7 +307,7 @@ export class Engine {
     if (st.graphVersion !== this.builtVersion) this.rebuild(st);
     if (st.stats !== this.lastPushedStats && this.lastPushedStats !== null) {
       // external change (prestige, load, milestone rewards touch cash only)
-      this.stats = { ...st.stats };
+      this.adoptStats(st.stats);
     }
     if (st.runEpoch !== this.runEpoch) {
       // A save was loaded, or newGame/prestige rewound the clock. Adopt the
@@ -299,6 +325,11 @@ export class Engine {
       this.events = new EventSystem();
       this.autoscaler = new AutoscalerSystem();
       this.caseInjected = new Set();
+      this.insUntil = 0;
+      this.drillArmed = false;
+      this.dropPath = [];
+      this.pmWatch.clear();
+      this.adoptStats(st.stats);
       // node ids restart per run — never let a new run inherit old backlogs
       this.nodes = new Map();
       this.edges = new Map();
@@ -313,7 +344,7 @@ export class Engine {
         st.addToast(kind === 'ok' ? 'ok' : kind, title, body),
     };
     // case studies: inject scripted events as their time comes, no random ones
-    const caseDef = st.caseId ? caseById.get(st.caseId) : undefined;
+    const caseDef = st.caseId ? resolveCase(st.caseId, st.customCases) : undefined;
     if (caseDef) {
       caseDef.events.forEach((ev, i) => {
         const key = `${st.caseId}:${i}`;
@@ -336,6 +367,7 @@ export class Engine {
     for (const sn of this.nodes.values()) {
       const pn = byId.get(sn.id)!;
       const spec = specOf(pn.kind, pn.zone?.template);
+      sn.name = pn.label ?? pn.zone?.name ?? spec.name.toLowerCase();
       const region = this.regionOf.get(sn.id);
       sn.regionCostMult =
         (region?.policies.redundancy ? BAL.regionRedundancyCostMult : 1) *
@@ -353,7 +385,7 @@ export class Engine {
         sn.booting = booting ? 1 : 0;
         if (sn.wasBooting && !booting && pn.kind !== 'users') {
           sn.health = 1;
-          this.log('deploy', `deploy: ${spec.name.toLowerCase()} ${sn.id} online`);
+          this.log('deploy', `deploy: ${sn.name} online`);
         }
         sn.wasBooting = booting;
       }
@@ -371,13 +403,26 @@ export class Engine {
 
       sn.offline = Boolean(pn.disabled) || fx.disabledNodes.has(sn.id);
       let cap = spec.capacity * levelCapMult(pn.level) * Math.max(0, sn.ready) * sn.health * mods.capacityMult;
-      if (pn.kind === 'postgres' || pn.kind === 'replica') cap *= fx.dbCapMult;
+      // node mastery: veterans of a kind squeeze a little more out of the same box
+      const mTier = masteryTier(this.stats.servedByKind[spec.kind] ?? 0);
+      if (mTier > 0) cap *= 1 + BAL.masteryCapPerTier * mTier;
+      if (DB_KINDS.has(pn.kind)) cap *= fx.dbCapMult;
       if (pn.kind === 'worker' && st.research.includes('mlpipe')) cap *= 1.5;
       const degraded = fx.degradedNodes.get(sn.id);
       if (degraded !== undefined) cap *= degraded;
       if (sn.offline) cap = 0;
       // lambda: elastic concurrency that follows recent throughput (cold starts)
       if (spec.special === 'lambda') cap = Math.min(cap, 6 + sn.servedEma * 1.6);
+      // spot instances: reclaimed on a rolling per-node cycle — the discount's fine print.
+      // Standalone boxes go fully dark; pools lose half (per-instance staggering).
+      if (pn.kind === 'spot' || (pn.kind === 'zone' && pn.zone?.template === 'spot')) {
+        const offset = (parseInt(sn.id.slice(1), 10) || 0) * 61;
+        const phase = (this.simTime + offset) % BAL.spotCycleSec;
+        if (phase < BAL.spotReclaimSec) {
+          cap *= pn.kind === 'zone' ? 0.5 : 0;
+          this.hint(sn, 'Spot capacity reclaimed — back shortly');
+        }
+      }
       // replica without a WAL link from a primary barely functions
       if (pn.kind === 'replica') {
         const linked = (this.inEdges.get(sn.id) ?? []).some((e) => e.tPort === 'repl');
@@ -555,7 +600,7 @@ export class Engine {
       // lesson latches
       if (congestion > 1.8 && sn.inSm > 1 && spec.baseLatencyMs > 0) this.sawCongestion = true;
       if (spec.special === 'queue' && totalBacklog > 100) this.sawQueueBuffer = true;
-      if ((pn.kind === 'postgres' || pn.kind === 'replica') && sn.utilSm > 0.9) this.sawDbHot = true;
+      if (DB_KINDS.has(pn.kind) && sn.utilSm > 0.9) this.sawDbHot = true;
 
       const budget = eff * dt;
       const drawFrac = wBack <= budget || wBack === 0 ? 1 : budget / wBack;
@@ -574,7 +619,7 @@ export class Engine {
         if (reqLat > CLASS_TIMEOUT_MS[c]) {
           dropRate += take / dt;
           ui.drops += take / dt;
-          this.hint(sn, spec.name === 'Kafka' ? 'Consumers too slow — jobs are expiring' : 'Requests timing out — add capacity upstream');
+          this.hint(sn, spec.special === 'queue' ? 'Consumers too slow — jobs are expiring' : 'Requests timing out — add capacity upstream');
           continue;
         }
 
@@ -638,6 +683,9 @@ export class Engine {
       readHits += hitsHere;
       servedRate += servedHere / dt;
       sn.servedEma += (servedHere / dt - sn.servedEma) * 0.1;
+      if (servedHere > 0) {
+        this.stats.servedByKind[spec.kind] = (this.stats.servedByKind[spec.kind] ?? 0) + servedHere;
+      }
       if (pn.kind === 'cdn' && servedHere > 0.01) this.sawCdnHit = true;
 
       ui.util = Math.max(0, sn.utilSm);
@@ -668,15 +716,20 @@ export class Engine {
     }
 
     // ---- research points ----
-    const promNodes = st.nodes.filter((n) => n.kind === 'prometheus' && !n.disabled && (n.bootUntil ?? 0) <= this.simTime);
+    // Any 'metrics' node samples traffic; rpWeight lets managed observability
+    // (Datadog) out-research self-hosted Prometheus — for a real $ bill.
+    const metricsNodes = st.nodes.filter(
+      (n) => n.kind !== 'zone' && specOf(n.kind).special === 'metrics' && !n.disabled && (n.bootUntil ?? 0) <= this.simTime,
+    );
     let rpRate = 0;
-    if (promNodes.length > 0) {
-      const levels = promNodes.reduce((a, n) => a + n.level, 0);
-      rpRate = (BAL.rpBase * Math.sqrt(Math.max(0, this.servedEma)) * Math.sqrt(promNodes.length) + BAL.rpPerPromLevel * levels) * mods.rpMult;
-      const share = rpRate / promNodes.length;
-      for (const p of promNodes) {
-        const sn = this.nodes.get(p.id);
-        if (sn) sn.ui.rpRate = share;
+    if (metricsNodes.length > 0) {
+      const weights = metricsNodes.map((n) => specOf(n.kind).rpWeight ?? 1);
+      const wSum = weights.reduce((a, b) => a + b, 0);
+      const wLevels = metricsNodes.reduce((a, n, i) => a + n.level * weights[i], 0);
+      rpRate = (BAL.rpBase * Math.sqrt(Math.max(0, this.servedEma)) * Math.sqrt(wSum) + BAL.rpPerPromLevel * wLevels) * mods.rpMult;
+      for (let i = 0; i < metricsNodes.length; i++) {
+        const sn = this.nodes.get(metricsNodes[i].id);
+        if (sn) sn.ui.rpRate = (rpRate * weights[i]) / wSum;
       }
     }
 
@@ -722,6 +775,20 @@ export class Engine {
     this.p95Samples = this.p95Samples.filter((s) => s.t >= cutoff);
     this.p95 = weightedP95(this.p95Samples);
 
+    // ---- first-failure insurance: the first bottleneck teaches, not scars ----
+    if (
+      !st.insuranceUsed &&
+      !st.sandbox &&
+      !st.caseId &&
+      this.insUntil === 0 &&
+      this.dropsEma > 1 &&
+      this.servedEma > 1
+    ) {
+      this.insUntil = this.simTime + BAL.insuranceWindowSec;
+      st.markInsuranceUsed();
+    }
+    const insured = this.simTime < this.insUntil;
+
     // ---- reputation ----
     // Rep drifts toward a target set by the uptime ratio: 90% uptime maps to
     // rep 0, 99.9%+ maps to 100. It bleeds fast during outages and heals slow —
@@ -729,18 +796,26 @@ export class Engine {
     let rep = st.rep;
     const ratioNow = this.uptime01;
     const repTarget = ratioNow >= 0.999 ? 100 : Math.max(0, Math.min(100, ((ratioNow - 0.9) / 0.099) * 100));
-    const repRate = repTarget > rep ? BAL.repHealRate : BAL.repBleedRate;
+    const bleedMult = st.mandate === 'ironclad' ? 1.75 : 1; // reliability pledge: drops hurt more
+    const repRate = repTarget > rep ? BAL.repHealRate : insured ? 0 : BAL.repBleedRate * bleedMult;
     rep += (repTarget - rep) * repRate * dt;
-    if (this.events.hasActiveIncident()) rep -= BAL.repIncidentDrain * dt;
+    if (this.events.hasActiveIncident() && !insured) rep -= BAL.repIncidentDrain * bleedMult * dt;
     rep = Math.max(BAL.repMin, Math.min(BAL.repMax, rep));
 
     // ---- company growth (logistic toward the round's scale cap) ----
     const round = roundIndex(st.spTotal);
     const cap = BAL.scaleCaps[Math.min(round, BAL.scaleCaps.length - 1)];
+    const growthMult = st.mandate === 'blitzscale' ? 1.5 : 1;
     let scale = st.scale;
     if (!st.sandbox && !st.caseId && this.servedEma > 0.5) {
-      scale += BAL.growthRate * BAL.repFactor(rep) * scale * (1 - scale / cap) * dt;
+      scale += BAL.growthRate * growthMult * BAL.repFactor(rep) * scale * (1 - scale / cap) * dt;
       scale = Math.min(scale, cap);
+    }
+
+    // ---- chaos drill accounting ----
+    if (st.drill.activeUntil > this.simTime && this.drillArmed) {
+      this.drillOffered += offeredRate * dt;
+      this.drillDropped += dropRate * dt;
     }
 
     // ---- events accounting ----
@@ -755,7 +830,7 @@ export class Engine {
     if (this.uptime01 >= 0.9999 && this.servedEma > 1) this.stats.fourNinesStreak += dt;
     else this.stats.fourNinesStreak = 0;
 
-    // ---- 1 Hz systems: autoscaler, milestones, achievements ----
+    // ---- 1 Hz systems: autoscaler, milestones, achievements, live-ops ----
     this.secAcc += dt;
     if (this.secAcc >= 1) {
       this.secAcc = 0;
@@ -773,10 +848,17 @@ export class Engine {
       if (!st.caseId) {
         this.checkMilestones(st, demand.atMarketCap, lifetimeRev);
         this.checkAchievements(st, byId, profitNow);
+        this.evalContracts(st, rep);
+        this.evalDrill(st);
+        this.tickRival(st);
+        this.recordMilestoneHistory(st);
       } else {
         this.evaluateCase(st, cash);
       }
       this.checkLessons(st, lifetimeRev);
+      this.trackPostmortems(st, rep);
+      this.checkMastery(st);
+      this.computeDropPath();
       if (this.readHitShareTick(readHits, readServed) >= 0.3 && st.research.includes('caching')) {
         st.completeMilestone('first-cache');
       }
@@ -816,6 +898,7 @@ export class Engine {
       edgeStats,
       events: this.events.snapshot(),
       demandMult: fx.demandMult,
+      dropPathEdges: this.dropPath,
     };
     const statsCopy = { ...this.stats };
     this.lastPushedStats = statsCopy;
@@ -834,6 +917,204 @@ export class Engine {
     });
     this.lastPushedStats = this.store.getState().stats;
     this.tickLogs = [];
+  }
+
+  // ----------------------------------------------------------- live-ops --
+
+  private currentGauges(): Gauges {
+    return {
+      offered: this.offeredEma,
+      served: this.servedEma,
+      dropped: this.dropsEma,
+      shed: this.shedEma,
+      p95: this.p95 > 0 ? this.p95 : 9999,
+      revenuePerSec: this.revEma,
+      costPerSec: this.costEma,
+      profitPerSec: this.revEma - this.costEma,
+      uptime: this.uptime01 * 100,
+      rpPerSec: 0,
+    };
+  }
+
+  /** SLA contracts: roll the board on schedule; hold-evaluate the active one. */
+  private evalContracts(st: GameStore, rep: number) {
+    void rep;
+    if (st.sandbox) return;
+    if (st.milestones.includes('ten-rps') && this.simTime >= st.contractsRefreshAt) {
+      st.setContractState({
+        offers: rollContractOffers(this.currentGauges(), this.simTime),
+        refreshAt: this.simTime + BAL.contractRefreshSec,
+      });
+    }
+    const c = st.activeContract;
+    if (!c) return;
+    const g = this.currentGauges();
+    const metrics: Record<string, number> = {
+      p95: g.p95,
+      uptime: g.uptime,
+      dropped: g.dropped,
+      cost: g.costPerSec,
+      served: g.served,
+      profit: g.profitPerSec,
+    };
+    const v = metrics[c.metric];
+    const ok = c.op === '<' ? v < c.value : v > c.value;
+    const held = ok ? c.held + 1 : 0;
+    if (held >= c.holdSec) {
+      st.completeContract();
+      this.stats.contractsCompleted++;
+      if (this.stats.contractsCompleted >= 10) st.grantAchievement('dealmaker');
+      this.log('ok', `contract delivered: ${c.label}`);
+    } else if (this.simTime > c.deadlineAt) {
+      st.failContract();
+      this.stats.contractsFailed++;
+      this.log('err', `contract failed: ${c.label} — the client walks`);
+    } else if (held !== c.held) {
+      st.setContractState({ active: { ...c, held } });
+    }
+  }
+
+  /** Chaos drill: arm + inject on start, grade on end (drop share). */
+  private evalDrill(st: GameStore) {
+    const active = st.drill.activeUntil > this.simTime;
+    const logger = {
+      log: (sev: LogSev, msg: string) => this.log(sev, msg),
+      toast: (kind: 'event' | 'warn' | 'ok', title: string, body?: string) =>
+        st.addToast(kind === 'ok' ? 'ok' : kind, title, body),
+    };
+    if (active && !this.drillArmed) {
+      this.drillArmed = true;
+      this.drillOffered = 0;
+      this.drillDropped = 0;
+      this.events.injectScripted({ kind: 'spike', mult: 2.6, durSec: 45, label: 'drill: synthetic surge' }, this.simTime, st, logger);
+      this.events.injectScripted({ kind: 'db_slow', durSec: 35, label: 'drill: slow-query storm' }, this.simTime + 70, st, logger);
+      this.events.injectScripted({ kind: 'outage', durSec: 22, label: 'drill: zone failure' }, this.simTime + 120, st, logger);
+    } else if (!active && this.drillArmed) {
+      this.drillArmed = false;
+      const share = this.drillOffered > 1 ? this.drillDropped / this.drillOffered : 0;
+      const passed = share < BAL.drillPassDropShare;
+      if (passed) this.stats.drillsCompleted++;
+      st.finishDrill(passed, share);
+    }
+  }
+
+  /** The rival grows toward this round's cap; beat them at raise time for SP. */
+  private tickRival(st: GameStore) {
+    if (st.sandbox) return;
+    const round = roundIndex(st.spTotal);
+    const target = BAL.rpsCaps[Math.min(round, BAL.rpsCaps.length - 1)] * BAL.rivalTargetShare;
+    let r = st.rival.rps;
+    r += r * BAL.rivalGrowth * Math.max(0.05, 1 - r / target) + (Math.random() - 0.45) * 0.3;
+    st.setRival(Math.max(1, Math.min(target, r)));
+  }
+
+  /** History entries for throughput records (survives via stats.peakServed). */
+  private recordMilestoneHistory(st: GameStore) {
+    for (const th of [100, 1000, 10000]) {
+      if (this.servedEma >= th && this.lastPeakMark < th) {
+        this.lastPeakMark = th;
+        st.pushHistory('⚡', `First time serving ${fmtNum(th)} rps`);
+      }
+    }
+  }
+
+  /** Watch incidents from start to end and file a postmortem card. */
+  private trackPostmortems(st: GameStore, rep: number) {
+    const liveIncidents = this.events.active.filter(
+      (e) => e.started && e.kind !== 'spike' && e.kind !== 'bad_deploy',
+    );
+    for (const ev of liveIncidents) {
+      if (!this.pmWatch.has(ev.id)) {
+        this.pmWatch.set(ev.id, {
+          kind: ev.kind,
+          label: ev.label,
+          t0: this.simTime,
+          drop0: this.stats.totalDropped,
+          rep0: rep,
+        });
+      }
+    }
+    const liveIds = new Set(liveIncidents.map((e) => e.id));
+    for (const [id, w] of this.pmWatch) {
+      if (liveIds.has(id)) continue;
+      this.pmWatch.delete(id);
+      const dropped = Math.max(0, this.stats.totalDropped - w.drop0);
+      const repLost = Math.max(0, w.rep0 - rep);
+      const mitigations: string[] = [];
+      const gaps: string[] = [];
+      const hasRedundancy = st.regions.some((r) => r.policies.redundancy);
+      const hasK8s = st.nodes.some((n) => n.kind === 'k8s' && !n.disabled);
+      const shedding = this.shedEma > 0.2 || st.regions.some((r) => r.policies.rateLimit) || st.nodes.some((n) => n.kind === 'apigw' && !n.disabled);
+      const caching = this.readHitEma > 0.25;
+      (hasRedundancy ? mitigations : gaps).push(hasRedundancy ? 'N+1 redundancy degraded instead of dying' : 'N+1 redundancy (region policy) would degrade instead of die');
+      (hasK8s ? mitigations : gaps).push(hasK8s ? 'k8s rescheduled the fallen instances' : 'an orchestrator would self-heal the fallen instances');
+      if (w.kind === 'db_slow') (caching ? mitigations : gaps).push(caching ? 'caches kept absorbing reads' : 'a warmer cache tier would absorb the read load');
+      if (shedding && dropped > 1) mitigations.push('load shedding failed cheap (429s beat timeouts)');
+      const takeaways: Record<string, string> = {
+        db_slow: 'Slow queries are a capacity event: whatever headroom the primary had is what you kept. Caches and replicas ARE the headroom.',
+        outage: 'Zones fail as a unit. Blast radius is a design decision — regions, N+1 and an orchestrator make failures boring.',
+        dep_failure: "Your p95 includes other people's outages. Keep your own hops fast enough to absorb a slow third party.",
+      };
+      st.pushPostmortem({
+        id: this.pmCounter++,
+        at: this.simTime,
+        kind: w.kind,
+        title: w.label,
+        durSec: Math.round(this.simTime - w.t0),
+        dropped: Math.round(dropped),
+        repLost: Math.round(repLost * 10) / 10,
+        mitigations: mitigations.slice(0, 3),
+        gaps: gaps.slice(0, 2),
+        takeaway: takeaways[w.kind] ?? 'Everything fails, always. The question is only how boring you made it.',
+      });
+      this.stats.incidentsSurvived++;
+    }
+  }
+
+  /** Mastery tier-ups: toast when a kind crosses bronze/silver/gold. */
+  private checkMastery(st: GameStore) {
+    for (const [kind, served] of Object.entries(this.stats.servedByKind)) {
+      const tier = masteryTier(served);
+      const known = this.masteryKnown.get(kind);
+      if (known === undefined) {
+        this.masteryKnown.set(kind, tier);
+        continue;
+      }
+      if (tier > known) {
+        this.masteryKnown.set(kind, tier);
+        const spec = specOf(kind as NodeKind);
+        st.addToast(
+          'achievement',
+          `${spec.name} mastery: ${MASTERY_NAMES[tier]}`,
+          `${fmtNum(served)} lifetime requests — every ${spec.name} now runs +${Math.round(BAL.masteryCapPerTier * tier * 100)}% capacity.`,
+        );
+      }
+    }
+  }
+
+  /** Bottleneck breadcrumbs: edges on any path from the source to a dropping node. */
+  private computeDropPath() {
+    const dropping = [...this.nodes.values()].filter((sn) => sn.ui.drops > 0.3 && !sn.offline);
+    if (dropping.length === 0) {
+      if (this.dropPath.length > 0) this.dropPath = [];
+      return;
+    }
+    const marked = new Set<string>();
+    const visited = new Set<string>();
+    for (const sn of dropping) {
+      const stack = [sn.id];
+      while (stack.length > 0 && marked.size < 300) {
+        const cur = stack.pop()!;
+        if (visited.has(cur)) continue;
+        visited.add(cur);
+        for (const e of this.inEdges.get(cur) ?? []) {
+          if (e.tPort === 'control' || e.tPort === 'repl') continue;
+          marked.add(e.id);
+          if (!visited.has(e.source)) stack.push(e.source);
+        }
+      }
+    }
+    this.dropPath = [...marked];
   }
 
   // ------------------------------------------------------------- helpers --
@@ -867,7 +1148,7 @@ export class Engine {
     sn.ui.hint = text;
     if (this.simTime - sn.lastHintAt > BAL.hintCooldownSec) {
       sn.lastHintAt = this.simTime;
-      this.log('warn', `${sn.id}: ${text}`);
+      this.log('warn', `${sn.name}: ${text}`);
     }
   }
 
@@ -900,7 +1181,7 @@ export class Engine {
         complete('first-bottleneck');
       }
     }
-    if (st.nodes.some((n) => n.kind === 'prometheus' && !n.disabled)) complete('observability');
+    if (st.nodes.some((n) => n.kind !== 'zone' && specOf(n.kind).special === 'metrics' && !n.disabled)) complete('observability');
     if (st.tiers.includes(2)) complete('tier-two');
     if (st.nodes.some((n) => n.kind === 'stripe')) complete('auto-billing');
     if (pendingSp(lifetimeRev) >= BAL.prestigeMinSp) complete('series-ready');
@@ -911,12 +1192,12 @@ export class Engine {
 
   /** Case studies: hold each SLO continuously for its window; time and cash cut both ways. */
   private evaluateCase(st: GameStore, cash: number) {
-    const def = st.caseId ? caseById.get(st.caseId) : undefined;
+    const def = st.caseId ? resolveCase(st.caseId, st.customCases) : undefined;
     if (!def || st.caseStatus !== 'running') return;
 
     let dbmax = 0;
     for (const sn of this.nodes.values()) {
-      if (sn.kind === 'postgres' || sn.kind === 'replica') dbmax = Math.max(dbmax, sn.utilSm);
+      if (DB_KINDS.has(sn.kind as NodeKind)) dbmax = Math.max(dbmax, sn.utilSm);
     }
     const metrics: Record<string, number> = {
       p95: this.p95 > 0 ? this.p95 : 9999,
@@ -1000,6 +1281,22 @@ export class Engine {
     if (this.servedEma >= 1000) grant('kilo-rps');
     if (this.stats.prestiges >= 1) grant('exit-strategy');
     if (profitNow >= 100) grant('money-printer');
+
+    // --- combo discoveries: reward architectures worth experimenting toward ---
+    const hitting = (kind: string) =>
+      [...this.nodes.values()].some((sn) => sn.kind === kind && sn.ui.hitPct > 0.05 && sn.ui.inRps > 0.5);
+    if ((hitting('cdn') || hitting('fastly')) && hitting('varnish')) grant('layered-cache');
+    if (hitting('redis') && hitting('memcached')) grant('cache-hierarchy');
+    const spotCount = st.nodes.filter(
+      (n) => !n.disabled && (n.kind === 'spot' || (n.kind === 'zone' && n.zone?.template === 'spot')),
+    ).length;
+    if (spotCount >= 3 && kinds.has('k8s') && this.uptime01 > 0.99 && this.servedEma > 5) grant('chaos-native');
+    const dbServing = new Set(
+      [...this.nodes.values()]
+        .filter((sn) => ['postgres', 'mysql', 'mssql', 'mongo', 'elastic'].includes(sn.kind) && sn.ui.served > 0.1)
+        .map((sn) => sn.kind),
+    );
+    if (dbServing.size >= 3) grant('polyglot');
   }
 }
 
@@ -1015,12 +1312,13 @@ function portType(handle: string): PortType {
 }
 
 function misconfigHint(kind: string, cls: string): string {
-  if (kind === 'nginx' || kind === 'lb' || kind === 'apigw' || kind === 'cdn')
+  if (kind === 'nginx' || kind === 'lb' || kind === 'haproxy' || kind === 'apigw' || kind === 'cdn' || kind === 'fastly' || kind === 'varnish')
     return `No upstream for ${cls} traffic — wire the output onward`;
-  if (kind === 'app' && (cls === 'read' || cls === 'write')) return 'No database connected — reads/writes failing';
-  if (kind === 'app' && cls === 'job') return 'No queue connected — heavy jobs failing';
-  if (kind === 'redis') return 'Cache misses have no database behind them';
+  if ((kind === 'app' || kind === 'spot') && (cls === 'read' || cls === 'write')) return 'No database connected — reads/writes failing';
+  if ((kind === 'app' || kind === 'spot') && cls === 'job') return 'No queue connected — heavy jobs failing';
+  if (kind === 'redis' || kind === 'memcached') return 'Cache misses have no database behind them';
   if (kind === 'replica' && cls === 'write') return 'Writes need a path back to the primary';
+  if (kind === 'elastic' && cls === 'write') return 'Search indexes don\'t own writes — wire a database behind it';
   if (kind === 's3') return `S3 can't serve ${cls} traffic`;
   if (kind === 'worker') return `Workers only consume jobs — ${cls} has nowhere to go`;
   return `${cls} traffic has nowhere to go`;

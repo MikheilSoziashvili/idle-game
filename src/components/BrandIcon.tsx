@@ -1,13 +1,19 @@
 import {
   siApachekafka,
   siCloudflare,
+  siDatadog,
   siDocker,
+  siElasticsearch,
+  siFastly,
   siGithubactions,
   siGrafana,
   siKubernetes,
+  siMongodb,
+  siMysql,
   siNginx,
   siPostgresql,
   siPrometheus,
+  siRabbitmq,
   siRedis,
   siStripe,
 } from 'simple-icons';
@@ -28,14 +34,20 @@ const BRAND: Partial<Record<NodeKind, SiIcon>> = {
   nginx: siNginx,
   redis: siRedis,
   postgres: siPostgresql,
+  mysql: siMysql,
+  mongo: siMongodb,
+  elastic: siElasticsearch,
   queue: siApachekafka,
+  rabbitmq: siRabbitmq,
   k8s: siKubernetes,
   prometheus: siPrometheus,
+  datadog: siDatadog,
   grafana: siGrafana,
   stripe: siStripe,
   app: siDocker,
   cicd: siGithubactions,
   cdn: siCloudflare,
+  fastly: siFastly,
 };
 
 // Original glyphs (24×24, stroke-based) for services without a usable mark.
@@ -115,6 +127,69 @@ const GLYPH: Partial<Record<NodeKind, { el: React.ReactNode; color: string; titl
       <g fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
         <rect x="8.6" y="8.6" width="6.8" height="6.8" rx="1.4" />
         <path d="M12 2.8v3M12 18.2v3M15.2 5.8L12 2.8 8.8 5.8M8.8 18.2l3.2 3 3.2-3" />
+      </g>
+    ),
+  },
+  haproxy: {
+    title: 'HAProxy',
+    color: '#106DA9', // HAProxy blue
+    el: (
+      <g fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3.5 12h5M8.5 12l7.5-5.5M8.5 12l7.5 5.5" />
+        <rect x="16.2" y="4" width="4.6" height="4.6" rx="1" />
+        <rect x="16.2" y="15.4" width="4.6" height="4.6" rx="1" />
+      </g>
+    ),
+  },
+  varnish: {
+    title: 'Varnish Cache',
+    color: '#00A8A8',
+    el: (
+      <g fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4 6.5l8 13 8-13" />
+        <path d="M8.2 6.5h7.6" />
+      </g>
+    ),
+  },
+  memcached: {
+    title: 'Memcached',
+    color: '#288D77', // memcached green
+    el: (
+      <g fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="4" y="4" width="16" height="16" rx="2.5" />
+        <path d="M8 15.5V9l4 4 4-4v6.5" />
+      </g>
+    ),
+  },
+  mssql: {
+    title: 'SQL Server',
+    color: '#A91D22', // SQL Server red
+    el: (
+      <g fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round">
+        <ellipse cx="12" cy="5.6" rx="7.5" ry="2.6" />
+        <path d="M4.5 5.6v12.8c0 1.4 3.4 2.6 7.5 2.6s7.5-1.2 7.5-2.6V5.6" />
+        <path d="M4.5 12c0 1.4 3.4 2.6 7.5 2.6s7.5-1.2 7.5-2.6" />
+      </g>
+    ),
+  },
+  sqs: {
+    title: 'SQS (managed queue)',
+    color: '#E7157B', // AWS app-integration pink
+    el: (
+      <g fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3.2" y="8.2" width="17.6" height="7.6" rx="2" />
+        <path d="M7 12h.01M11 12h.01M15 12h.01" strokeWidth="2.4" />
+        <path d="M18 12h1.5" />
+      </g>
+    ),
+  },
+  spot: {
+    title: 'Spot Instance',
+    color: '#ED7100', // AWS compute orange
+    el: (
+      <g fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="4.5" y="4.5" width="15" height="15" rx="2" strokeDasharray="3.2 2.2" />
+        <path d="M12.8 8l-3.2 4.4h2.6L10.9 16l3.9-4.9h-2.5L12.8 8z" fill="currentColor" stroke="none" />
       </g>
     ),
   },

@@ -40,7 +40,7 @@
 }
 /* keep RF chrome clear of the floating panels */
 .flow-controls {
-  margin-left: 240px !important;
+  margin-left: 296px !important; /* toolbar (→62) + palette (→288) + gap */
   margin-bottom: 10px !important;
 }
 .flow-minimap {
@@ -49,7 +49,7 @@
 }
 @media (max-width: 1220px) {
   .flow-minimap { display: none; }
-  .flow-controls { margin-left: 218px !important; }
+  .flow-controls { margin-left: 270px !important; }
 }
 
 .react-flow__handle {
@@ -79,6 +79,33 @@
 
 .wire-mode .react-flow__handle {
   box-shadow: 0 0 0 3px rgba(47, 111, 235, 0.18);
+}
+
+/* Whole-card wiring handles: invisible, never intercept the pointer — they
+   only exist as drop targets (closest-handle math uses their bounds). In wire
+   mode the out-handle turns interactive so any drag on the card starts a wire. */
+.react-flow__handle.port-any {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  transform: none;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: none;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+.react-flow__handle.port-any:hover {
+  transform: none;
+}
+.wire-mode .react-flow__handle.port-any-out {
+  pointer-events: all;
+  cursor: crosshair;
 }
 
 .react-flow__edge.selected .rf-packet-path {
@@ -412,6 +439,43 @@
 .stamp-ghost .ghost-zone {
   border-style: dotted;
 }
+
+/* bottleneck breadcrumbs: the path feeding a dropping node pulses red */
+.rf-packet-path.drop-path {
+  stroke: var(--bad, #d33) !important;
+  stroke-dasharray: 9 6;
+  animation: dropPathMarch 0.8s linear infinite;
+}
+@keyframes dropPathMarch {
+  to { stroke-dashoffset: -15; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rf-packet-path.drop-path { animation: none; }
+}
+
+/* what-if ghost card during palette drag */
+.drag-whatif {
+  position: absolute;
+  z-index: 30;
+  pointer-events: none;
+  background: var(--panel);
+  border: 1px solid var(--line-bright);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lg);
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10.5px;
+  color: var(--dim);
+  max-width: 240px;
+}
+.drag-whatif b { color: var(--text); font-size: 11.5px; }
+
+/* mastery borders on node cards */
+.node-card.mastery-1 { box-shadow: 0 0 0 1.5px rgba(176, 141, 87, 0.45), var(--shadow, 0 1px 3px rgba(16,24,40,0.12)); }
+.node-card.mastery-2 { box-shadow: 0 0 0 1.5px rgba(154, 165, 177, 0.6), var(--shadow, 0 1px 3px rgba(16,24,40,0.12)); }
+.node-card.mastery-3 { box-shadow: 0 0 0 1.5px rgba(212, 160, 23, 0.65), var(--shadow, 0 1px 3px rgba(16,24,40,0.12)); }
 
 /* mode cursors */
 .mode-wire .react-flow__pane { cursor: crosshair; }

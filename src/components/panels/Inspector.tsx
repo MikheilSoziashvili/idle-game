@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { BAL, fmtMoney, fmtNum, levelCapMult, upgradeCost } from '../../game/engine/balance';
+import { BAL, MASTERY_NAMES, fmtMoney, fmtNum, levelCapMult, masteryTier, upgradeCost } from '../../game/engine/balance';
 import { CATEGORY_INFO, REPLACE_MAP, SPECS, specOf } from '../../game/catalog/nodes';
 import type { PlacedNode, RegionPolicies } from '../../game/engine/types';
 import { isKindUnlocked, useGame } from '../../game/state/store';
@@ -33,9 +33,11 @@ export default function Inspector() {
       <div className="empty-insp">
         <p style={{ marginTop: 0 }}>Select a node to configure it.</p>
         <p>
-          <kbd>V</kbd> move · <kbd>W</kbd> wire · <kbd>U</kbd> upgrade · <kbd>X</kbd> bulldoze
+          <kbd>V</kbd> move · <kbd>S</kbd> select · <kbd>W</kbd> wire · <kbd>U</kbd> upgrade · <kbd>X</kbd> bulldoze
           <br />
-          <kbd>Shift</kbd>+drag to box-select, then bulk-upgrade here.
+          Wire mode: drag from anywhere on a node to another — ports auto-match.
+          <br />
+          <kbd>S</kbd> then drag a box to select, then bulk-upgrade here.
         </p>
         <p>
           Watch the edges: a link turning red means the node behind it is saturating. Cache it, queue it, or scale it.
@@ -121,17 +123,37 @@ function NodePanel({ node }: { node: PlacedNode }) {
     isKindUnlocked({ sandbox, research, allTimeRev, lifetimeRev }, k),
   );
 
+  const mastery = useGame((st) => masteryTier(st.stats.servedByKind?.[spec.kind] ?? 0));
+
   return (
     <div>
       <div className="insp-title">
         <span className="node-logo" style={{ borderColor: cat.color }}>
           <BrandIcon kind={spec.kind} size={17} />
         </span>
-        <h3>{spec.name}</h3>
+        <h3>{node.label ?? spec.name}</h3>
         {!isSource && <span className="chip mono">L{node.level}</span>}
+        {mastery > 0 && (
+          <span className={`chip mastery-chip m${mastery}`} title={`${MASTERY_NAMES[mastery]} mastery: +${Math.round(BAL.masteryCapPerTier * mastery * 100)}% capacity for every ${spec.name}`}>
+            {MASTERY_NAMES[mastery]}
+          </span>
+        )}
       </div>
+      {!isSource && (
+        <input
+          type="text"
+          className="insp-rename"
+          placeholder={`name it (e.g. ${spec.short.toLowerCase()}-prod-1)`}
+          value={node.label ?? ''}
+          onChange={(e) => s.getState().setNodeLabel(node.id, e.target.value)}
+          aria-label="Node name"
+        />
+      )}
       <p className="insp-blurb">{spec.blurb}</p>
       <p className="insp-learn">{NODE_LEARN[spec.kind]}</p>
+      <a className="insp-docs" href={spec.docsUrl} target="_blank" rel="noopener noreferrer">
+        Official {spec.name} docs ↗
+      </a>
       <LiveStats id={node.id} showHit={Boolean(spec.hitRate)} />
 
       {!isSource && (
@@ -207,6 +229,13 @@ function ZonePanel({ node }: { node: PlacedNode }) {
         <h3>{zone.name}</h3>
         {hasAuto && <span className="chip">auto</span>}
       </div>
+      <input
+        type="text"
+        className="insp-rename"
+        value={zone.name}
+        onChange={(e) => s.getState().patchZone(node.id, { name: e.target.value })}
+        aria-label="Zone name"
+      />
       <p className="insp-blurb">
         Declarative pool of {SPECS[zone.template].name}s. {hasAuto ? 'The autoscaler tracks target utilization within min/max.' : 'Wire an Autoscaler to the top control port for hands-off scaling.'}
         {hasK8s ? ' Kubernetes attached: self-healing, −20% run cost.' : ''}
@@ -215,6 +244,9 @@ function ZonePanel({ node }: { node: PlacedNode }) {
         This is an EC2 Auto Scaling Group in AWS terms: capacity as a policy, not a purchase. Real teams declare "keep
         this pool at 65% utilization, 1–20 instances" and let the control loop do the buying. {NODE_LEARN[zone.template]}
       </p>
+      <a className="insp-docs" href={spec.docsUrl} target="_blank" rel="noopener noreferrer">
+        Official {spec.name} docs ↗
+      </a>
       <LiveStats id={node.id} showHit={false} />
 
       <div className="insp-actions">
