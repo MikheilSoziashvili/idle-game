@@ -39,5 +39,14 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+
+    <!-- Privacy-first analytics (GoatCounter): no cookies, no personal data, so
+         no consent banner is required. It automatically ignores localhost, so
+         dev sessions don't pollute the stats.
+         SETUP: sign up at goatcounter.com and claim the code "uptime-idle".
+         If that code is taken, pick another and update the URL below to match. -->
+    <script
+      data-goatcounter="https://uptime-idle.goatcounter.com/count"
+      async src="//gc.zgo.at/count.js"></script>
   </body>
 </html>
