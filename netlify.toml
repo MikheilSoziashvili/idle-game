@@ -1,0 +1,17 @@
+# Netlify build + hosting config. The site auto-deploys on every push to main.
+#
+# One-time setup:
+#   1. netlify.com → Add new site → Import an existing project → GitHub → idle-game
+#   2. Build settings are read from this file — just click Deploy.
+#   3. Site configuration → Change site name → "uptime" (or a free variant like
+#      uptime-game / playuptime) → your URL becomes https://<name>.netlify.app
+#
+# Asset paths are relative (vite base: './'), so the app also works unchanged
+# if you later point a custom domain at this site.
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
