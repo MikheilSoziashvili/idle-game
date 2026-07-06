@@ -547,6 +547,21 @@ function mismatchAdvice(srcId: string, tgtId: string): [string, string] {
   const ins = new Set(handlesOf(tgt).filter((h) => h.dir === 'in').map((h) => h.type));
   const srcName = src.label ?? specOf(src.kind, src.zone?.template).name;
   const tgtName = tgt.label ?? specOf(tgt.kind, tgt.zone?.template).name;
+  // If every type-compatible port pair is already wired, the ports aren't the
+  // problem — say so instead of a bogus "types don't match" explanation.
+  let compatible = 0;
+  let wired = 0;
+  for (const o of handlesOf(src).filter((h) => h.dir === 'out')) {
+    for (const i of handlesOf(tgt).filter((h) => h.dir === 'in')) {
+      if (o.type !== i.type) continue;
+      if (o.type === 'control' && tgt.kind !== 'zone') continue;
+      compatible++;
+      if (s.edges.some((e) => e.source === srcId && e.target === tgtId && e.sourceHandle === o.id && e.targetHandle === i.id)) wired++;
+    }
+  }
+  if (compatible > 0 && wired === compatible) {
+    return [`${srcName} → ${tgtName} already wired`, 'Those ports are already connected. Click the wire itself to remove it.'];
+  }
   const word = (set: Set<string>) => [...set].map((t) => PORT_WORD[t as keyof typeof PORT_WORD] ?? t).join('/') || 'nothing';
   if (ins.size === 0) return [`${tgtName} takes no wires`, 'It works on its own — no inputs to connect.'];
   if (outs.size === 0) return [`${srcName} sends nothing onward`, 'It terminates what it receives — wire INTO it instead.'];

@@ -1,11 +1,12 @@
 import { Handle, NodeResizer, Position, type Node, type NodeProps } from '@xyflow/react';
-import { fmtNum } from '../../../game/engine/balance';
+import { BAL, fmtNum } from '../../../game/engine/balance';
 import { PORT_WORD, type NodeKind } from '../../../game/engine/types';
 import { CATEGORY_INFO, SPECS, specOf } from '../../../game/catalog/nodes';
 import { useGame } from '../../../game/state/store';
 import { zoneHasController } from '../../../game/systems/zoning';
 import { rampColor } from '../../../game/systems/overlays';
 import BrandIcon from '../../BrandIcon';
+import { sparkPoints } from './InfraNode';
 
 export interface ZoneData extends Record<string, unknown> {
   template: Exclude<NodeKind, 'zone'>;
@@ -73,6 +74,16 @@ export default function ZoneNode({ id, data, selected }: NodeProps<ZoneNodeType>
         <span>${(live?.costRate ?? 0).toFixed(2)}/s</span>
         {!hasAuto && <span title="Wire an Autoscaler to the ⌾ port for hands-off scaling">manual</span>}
       </div>
+      {live?.role ? (
+        <div className="node-role" title={live.role} style={{ padding: '0 10px 4px 12px' }}>
+          {live.role}
+        </div>
+      ) : null}
+      {(live?.spark?.length ?? 0) > 1 && live!.spark.some((v) => v > 0) && (
+        <svg className="node-spark zone-spark" viewBox={`0 0 ${BAL.sparkLen} 16`} preserveAspectRatio="none" aria-label="served rps, last 48s">
+          <polyline points={sparkPoints(live!.spark, BAL.sparkLen)} />
+        </svg>
+      )}
 
       <Handle
         id="ctl-in"

@@ -1,4 +1,6 @@
 import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type EdgeProps } from '@xyflow/react';
+import { CLASSES, CLASS_COLORS, CLASS_LABEL } from '../../../game/engine/types';
+import { fmtNum } from '../../../game/engine/balance';
 import { useGame } from '../../../game/state/store';
 import { rampColor } from '../../../game/systems/overlays';
 import { useReducedMotion } from '../../hooks';
@@ -76,15 +78,28 @@ export default function PacketEdge(props: EdgeProps) {
               background: 'var(--panel-3)',
               border: '1px solid var(--line-bright)',
               borderRadius: 6,
-              padding: '2px 8px',
+              padding: '3px 8px',
               fontFamily: 'var(--mono)',
               fontSize: 10,
               color: 'var(--text)',
               pointerEvents: 'none',
               zIndex: 10,
+              textAlign: 'center',
             }}
           >
             {rps < 10 ? rps.toFixed(1) : Math.round(rps)} rps · {Math.round(util * 100)}%
+            {/* what KIND of traffic rides this wire — reads vs writes vs jobs */}
+            {active && (live?.classRates?.some((r) => r > 0.05) ?? false) && (
+              <div style={{ display: 'flex', gap: 6, justifyContent: 'center', marginTop: 2 }}>
+                {live!.classRates.map((r, i) =>
+                  r > 0.05 ? (
+                    <span key={CLASSES[i]} style={{ color: CLASS_COLORS[CLASSES[i]] }}>
+                      {CLASS_LABEL[CLASSES[i]]} {fmtNum(r)}
+                    </span>
+                  ) : null,
+                )}
+              </div>
+            )}
           </div>
         </EdgeLabelRenderer>
       )}

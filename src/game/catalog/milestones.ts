@@ -73,6 +73,20 @@ export const MILESTONES: MilestoneDef[] = [
     desc: 'Bank enough traction for a funding round (2 Scale Points pending).',
     hint: 'Open the Prestige panel to see projected Scale Points. Save a blueprint before you raise.',
   },
+  {
+    id: 'decompose',
+    title: 'Break the monolith',
+    desc: 'Route one product through its own dedicated ingress.',
+    hint: 'Research Domain Decomposition, place a Product Ingress, bind a product in the Inspector, and wire it to its own stack.',
+    rewardRp: 25,
+  },
+  {
+    id: 'first-shard',
+    title: 'Shard the writes',
+    desc: 'Split write traffic across two database shards.',
+    hint: 'Research Sharding, then wire App → Shard Router → two primaries. Writes finally scale horizontally.',
+    rewardRp: 30,
+  },
 ];
 
 export const milestoneById = new Map(MILESTONES.map((m) => [m.id, m]));

@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useGame } from '../../game/state/store';
+import { specOf } from '../../game/catalog/nodes';
 
 // ---------------------------------------------------------------------------
 // The interactive tutorial. Steps advance by WATCHING the game state (placed a
@@ -89,7 +90,11 @@ export default function TutorialCard() {
       placed: s.nodes.filter((n) => n.kind !== 'users').length,
       wires: s.edges.length,
       served: s.live.gauges.served,
-      scaled: s.nodes.some((n) => n.level >= 2) || s.nodes.filter((n) => n.kind !== 'users').length >= 2,
+      // "scale" = upgrade a node OR stand up a second capacity-bearing server;
+      // monitoring/control nodes (capacity 0) must not count as "another server".
+      scaled:
+        s.nodes.some((n) => n.level >= 2) ||
+        s.nodes.filter((n) => n.kind !== 'users' && specOf(n.kind, n.zone?.template).capacity > 0).length >= 2,
     })),
   );
 

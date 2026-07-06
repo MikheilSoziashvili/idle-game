@@ -70,11 +70,66 @@ export function diagnose(st: GameStore): Finding[] {
   for (const c of caches) {
     const s = stats(c.id);
     if (s && s.hitPct >= 0 && s.hitPct < 0.35 && s.inRps > 2) {
+      // warming up is expected, not a defect — call it what it is
+      if (s.warm01 >= 0 && s.warm01 < 0.9) {
+        f.push({
+          severity: 'tip',
+          title: `${nameOf(c)} is still warming (${Math.round(s.warm01 * 100)}%)`,
+          detail: 'A freshly deployed cache starts empty; hit rate climbs as traffic fills it.',
+          fix: 'Nothing to fix — but note the origin eats the misses until it warms. Provision for cold starts.',
+        });
+      } else {
+        f.push({
+          severity: 'tip',
+          title: `${nameOf(c)} hit rate is only ${Math.round(s.hitPct * 100)}%`,
+          detail: 'A cold or undersized cache passes misses straight through.',
+          fix: 'Upgrade the cache, or check that reads actually route through it.',
+        });
+      }
+    }
+  }
+
+  // --- connection-pool pressure --------------------------------------------------
+  if (!st.research.includes('pooling')) {
+    for (const n of nodes) {
+      const s = stats(n.id);
+      if (s && s.connLimit > 0 && s.conns > s.connLimit) {
+        f.push({
+          severity: 'warn',
+          title: `${nameOf(n)} is over-subscribed: ${s.conns} clients / pool of ${s.connLimit}`,
+          detail: 'Each wired client (× its instances) holds connections; past the pool they cost latency and capacity.',
+          fix: 'Research Connection Pooling (PgBouncer), add a read replica, or upgrade the database.',
+        });
+      }
+    }
+  }
+
+  // --- single-primary write ceiling → sharding --------------------------------------
+  for (const n of nodes) {
+    if (!['postgres', 'mysql', 'mssql', 'mongo'].includes(n.kind) || n.disabled) continue;
+    const s = stats(n.id);
+    if (!s || s.util < 0.88 || (s.classIn?.[3] ?? 0) < 2) continue;
+    if (nodes.some((x) => x.kind === 'shardrouter' && !x.disabled)) continue;
+    f.push({
+      severity: 'warn',
+      title: `${nameOf(n)} is write-bound — the last scaling wall`,
+      detail: 'Caches and replicas only absorb reads; every write still lands on this single primary.',
+      fix: st.research.includes('sharding')
+        ? `Wire App → Shard Router → 2+ primaries to split the write stream (${fmtMoney(SPECS.shardrouter.cost)}).`
+        : 'Research Sharding to split writes across multiple primaries.',
+    });
+    break; // one warning covers the pattern
+  }
+
+  // --- replication lag -------------------------------------------------------------
+  for (const n of nodes) {
+    const s = stats(n.id);
+    if (s && s.replLagSec > BAL.replLagStaleSec) {
       f.push({
-        severity: 'tip',
-        title: `${nameOf(c)} hit rate is only ${Math.round(s.hitPct * 100)}%`,
-        detail: 'A cold or undersized cache passes misses straight through.',
-        fix: 'Upgrade the cache, or check that reads actually route through it.',
+        severity: 'warn',
+        title: `${nameOf(n)} lags ${s.replLagSec.toFixed(1)}s behind its primary`,
+        detail: 'The primary is writing faster than the replica can replay — reads here return stale data (worth less).',
+        fix: 'Ease write pressure on the primary: queue the bursts, or upgrade it.',
       });
     }
   }

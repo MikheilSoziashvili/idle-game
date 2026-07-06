@@ -1,10 +1,34 @@
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import { BAL, fmtNum, masteryTier } from '../../../game/engine/balance';
-import { PORT_WORD, type NodeKind } from '../../../game/engine/types';
+import { CLASSES, CLASS_COLORS, CLASS_LABEL, PORT_WORD, type NodeKind, type NodeLive } from '../../../game/engine/types';
 import { CATEGORY_INFO, SPECS } from '../../../game/catalog/nodes';
 import { useGame } from '../../../game/state/store';
 import { overlayValue, rampColor } from '../../../game/systems/overlays';
 import BrandIcon from '../../BrandIcon';
+
+/** Polyline points for the served-rps sparkline, right-aligned so "now" hugs the right edge. */
+export function sparkPoints(spark: number[], len: number): string {
+  const max = Math.max(...spark, 1e-6);
+  const offset = len - spark.length;
+  return spark.map((v, i) => `${offset + i},${14.5 - (v / max) * 13}`).join(' ');
+}
+
+/** Class-mix strip: proportional colored segments of the incoming traffic. */
+export function ClassStrip({ live }: { live: NodeLive }) {
+  const total = live.classIn.reduce((a, b) => a + b, 0);
+  if (total < 0.5) return null;
+  const label = live.classIn
+    .map((r, i) => (r / total >= 0.02 ? `${CLASS_LABEL[CLASSES[i]]} ${fmtNum(r)}/s` : null))
+    .filter(Boolean)
+    .join(' · ');
+  return (
+    <div className="node-classstrip" title={`traffic mix: ${label}`}>
+      {live.classIn.map((r, i) =>
+        r / total >= 0.02 ? <i key={CLASSES[i]} style={{ flexGrow: r, background: CLASS_COLORS[CLASSES[i]] }} /> : null,
+      )}
+    </div>
+  );
+}
 
 export interface InfraData extends Record<string, unknown> {
   kind: Exclude<NodeKind, 'zone'>;
@@ -26,7 +50,7 @@ export default function InfraNode({ id, data, selected }: NodeProps<InfraNodeTyp
   const util = live?.util ?? 0;
   const booting = (live?.booting ?? 0) > 0 && (live?.instances ?? 1) === 0;
   const unhealthy = (live?.health ?? 1) < 0.85;
-  const isSource = spec.special === 'source';
+  const isSource = spec.special === 'source' || spec.special === 'ingress';
   const observ = spec.capacity === 0 && !isSource;
 
   const ins = spec.ports.filter((p) => p.dir === 'in');
@@ -66,6 +90,12 @@ export default function InfraNode({ id, data, selected }: NodeProps<InfraNodeTyp
           </span>
         )}
       </div>
+
+      {live?.role ? (
+        <div className="node-role" title={live.role}>
+          {live.role}
+        </div>
+      ) : null}
 
       <div className="node-stats">
         {isSource ? (
@@ -118,6 +148,7 @@ export default function InfraNode({ id, data, selected }: NodeProps<InfraNodeTyp
             )}
           </>
         )}
+        {!isSource && !observ && live && <ClassStrip live={live} />}
         {!isSource && !observ && (
           <div className="node-utilbar">
             <i
@@ -127,6 +158,28 @@ export default function InfraNode({ id, data, selected }: NodeProps<InfraNodeTyp
               }}
             />
           </div>
+        )}
+        {!isSource && !observ && (live?.queue ?? 0) > 3 && (
+          <div
+            className="node-queuebar"
+            title={`queue: ${live!.queue} buffered / ~${spec.queueLen * Math.max(1, (live!.instances ?? 1) + (live!.booting ?? 0))} capacity`}
+          >
+            <i
+              style={{
+                width: `${Math.min(100, (live!.queue / (spec.queueLen * Math.max(1, (live!.instances ?? 1) + (live!.booting ?? 0)))) * 100)}%`,
+              }}
+            />
+          </div>
+        )}
+        {!observ && (live?.spark?.length ?? 0) > 1 && live!.spark.some((v) => v > 0) && (
+          <svg
+            className="node-spark"
+            viewBox={`0 0 ${BAL.sparkLen} 16`}
+            preserveAspectRatio="none"
+            aria-label="served rps, last 48s"
+          >
+            <polyline points={sparkPoints(live!.spark, BAL.sparkLen)} />
+          </svg>
         )}
       </div>
 
@@ -143,9 +196,9 @@ export default function InfraNode({ id, data, selected }: NodeProps<InfraNodeTyp
           id={p.id}
           type="target"
           position={Position.Left}
-          className={`port-${p.type}`}
+          className={`port-${p.type}${(live?.portIn?.[p.type] ?? 0) > 0.05 ? ' port-active' : ''}`}
           style={{ top: 34 + i * 22 }}
-          title={`in · ${p.label} (${PORT_WORD[p.type]})`}
+          title={`in · ${p.label} (${PORT_WORD[p.type]}) · ${fmtNum(live?.portIn?.[p.type] ?? 0)} rps`}
         />
       ))}
       {outs.map((p, i) => (
@@ -154,9 +207,9 @@ export default function InfraNode({ id, data, selected }: NodeProps<InfraNodeTyp
           id={p.id}
           type="source"
           position={Position.Right}
-          className={`port-${p.type}`}
+          className={`port-${p.type}${(live?.portOut?.[p.type] ?? 0) > 0.05 ? ' port-active' : ''}`}
           style={{ top: 34 + i * 22 }}
-          title={`out · ${p.label} (${PORT_WORD[p.type]})`}
+          title={`out · ${p.label} (${PORT_WORD[p.type]}) · ${fmtNum(live?.portOut?.[p.type] ?? 0)} rps`}
         />
       ))}
 

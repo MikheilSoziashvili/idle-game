@@ -22,6 +22,11 @@ the Inspector, the dashboard gauges explain p95/SLO/uptime math on hover, and a
 glossary + your collected notes live in the Field Manual (`?`). Content lives in
 `src/game/catalog/lessons.ts`; notes can be toggled off in Settings.
 
+**New here? Read the [Player's Handbook](HANDBOOK.md)** — how traffic works, the
+full technology catalog with its trade-offs, the realism mechanics (cold caches,
+replication lag, retry storms…), the scaling ladder, and a field manual of common
+failure patterns and their fixes.
+
 ## Run it
 
 ```bash

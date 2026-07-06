@@ -120,6 +120,48 @@ export const LESSONS: LessonDef[] = [
     body:
       "You've outgrown this architecture — a good problem. Real companies hit this too: the scrappy stack that found product-market fit is never the platform that serves millions (ask anyone who watched Twitter's fail whale). Raising a round trades your infrastructure for permanent Scale Points — and blueprints survive, because the second build is always faster. That is what institutional knowledge means.",
   },
+  {
+    id: 'cache-warm',
+    title: 'The cold cache',
+    tag: 'cache warm-up',
+    body:
+      "That cache just booted EMPTY — every request is a miss until it fills, and all those misses are hitting your origin at once. This is why real teams fear restarting a hot cache more than almost any deploy: the database behind it has usually forgotten how to live without it (the 'thundering herd'). Mitigations in the wild: rolling restarts, cache warmers, and keeping the origin provisioned for a cold start you hope never comes.",
+  },
+  {
+    id: 'repl-lag',
+    title: 'Yesterday\'s data, served fresh',
+    tag: 'replication lag',
+    body:
+      'Your replica is falling behind the primary — it replays the write-ahead log, and the log is arriving faster than it can apply. Reads still succeed, but they return the PAST: a user updates their cart, refreshes, and sees the old one. This is replication lag, the classic asterisk on "just add read replicas". Real fixes: ease write pressure on the primary (queues, batching), or route the reads that must be fresh (read-your-writes) to the primary and let the rest tolerate staleness.',
+  },
+  {
+    id: 'conn-pool',
+    title: 'Too many friends',
+    tag: 'connection pooling',
+    body:
+      "Every app instance holds open connections to your database, and each one costs the DB real memory and scheduling work (Postgres famously forks a process per connection). Scale out your app tier without pooling and you can strangle a healthy primary with pure connection overhead — the queries were fine; the hellos killed it. The industry fix is a pooler like PgBouncer: thousands of client connections multiplexed onto a few dozen database sessions.",
+  },
+  {
+    id: 'retry-storm',
+    title: 'The stampede after the stumble',
+    tag: 'retry storm',
+    body:
+      "Requests are timing out — and the users behind them are hitting refresh. Every timeout breeds a retry, so effective load RISES exactly when capacity falls: the failure feeds itself. This is how small incidents become big ones (and why clients should retry with exponential backoff and jitter). The architectural fix is to fail FAST at the door: a rate-limiting gateway turns overload into instant 429s, which don't time out and don't multiply.",
+  },
+  {
+    id: 'microservices',
+    title: 'The monolith, decomposed',
+    tag: 'service decomposition',
+    body:
+      "One of your products now enters through its own front door and runs on its own stack. That's the essence of microservices — not small code, but ISOLATION: search traffic can no longer take down checkout, each stack scales to its own workload shape, and each can pick its own database. The tax is real too: more boxes to run, more wires to misconfigure, and every hop adds latency. Amazon and Netflix decomposed when team count, not request count, demanded it.",
+  },
+  {
+    id: 'sharding',
+    title: 'When one primary isn\'t enough',
+    tag: 'sharding',
+    body:
+      "You've hit the wall every planet-scale system hits: caches absorb reads, replicas spread reads, but WRITES still funnel into one primary. Sharding is the answer of last resort: partition the data by key (user id, region, tenant) so each shard owns a slice and takes only its share of writes. Now capacity scales with shard count — and so does operational pain: cross-shard queries, rebalancing hot shards, resharding as you grow. YouTube ran on sharded MySQL via Vitess; so does Slack.",
+  },
 ];
 
 export const lessonById = new Map(LESSONS.map((l) => [l.id, l]));
@@ -138,6 +180,8 @@ export const NODE_LEARN: Record<Exclude<NodeKind, 'zone'>, string> = {
     'The classic software load balancer: legendary raw throughput on a single box for almost nothing. The trade against a managed LB is operational — you run it, you patch it, and stock round-robin doesn\'t know which backend is drowning.',
   apigw:
     'A managed front door: authentication, routing and rate limiting per client. Its superpower is failing cheap — a fast 429 is kinder than a slow timeout, for you and the caller.',
+  ingress:
+    'Per-product traffic routing — the Kubernetes Ingress / GeoDNS pattern. Binding a product here carves its traffic out of the shared firehose so it runs on a stack of its own: isolated blast radius, workload-shaped scaling, independent deploys. This is how monoliths become platforms.',
   cdn:
     'A network of edge servers near users (Cloudflare runs in 300+ cities; CloudFront is the AWS equivalent). Static content is served from the closest one — a physics-level latency win no origin tuning can match.',
   fastly:
@@ -168,6 +212,8 @@ export const NODE_LEARN: Record<Exclude<NodeKind, 'zone'>, string> = {
     'A search and analytics index, not a system of record. It answers full-text and aggregation queries a SQL database would grind on — at the price of eventual consistency, real RAM appetite, and needing a real database behind it for writes.',
   replica:
     "A read-only copy kept in sync from the primary's write-ahead log (WAL). Spreads reads across machines; writes still funnel to one place — the price of consistency.",
+  shardrouter:
+    'Vitess/Citus-style query routing: data is partitioned by key across multiple primaries, and this box sends each read/write to the shard that owns it. The only pattern that scales WRITES horizontally — at the price of cross-shard joins, hot-shard rebalancing, and resharding pain. You adopt sharding when you must, not when you can.',
   queue:
     'Kafka is a durable log decoupling producers from consumers: write at spike speed, read at your own pace, replay history. Built for firehose volume — the trade is operational weight; below serious scale, a simpler broker does the job for less.',
   rabbitmq:
@@ -207,4 +253,8 @@ export const GLOSSARY: { term: string; def: string }[] = [
   { term: 'N+1 redundancy', def: 'One more instance than needed, so any single failure is boring.' },
   { term: 'Congestion collapse', def: 'Overload so deep everything times out and throughput hits zero. Shed load before this.' },
   { term: 'Control loop', def: 'Measure → compare to target → act → cool down. Autoscalers and orchestrators are just this.' },
+  { term: 'Replication lag', def: 'How far a replica trails its primary. Lagging replicas serve the past.' },
+  { term: 'Connection pool', def: 'Reused DB connections shared by many clients. Without one, app instances strangle the primary with hellos.' },
+  { term: 'Cache warm-up', def: 'A restarted cache is empty; hit rate climbs as traffic refills it. Misses meanwhile hammer the origin.' },
+  { term: 'Retry storm', def: 'Timeouts breed retries, raising load exactly when capacity fell. Fail fast to break the loop.' },
 ];

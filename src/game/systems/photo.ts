@@ -28,11 +28,13 @@ export function buildArchitectureSvg(st: GameStore): string {
     w: n.kind === 'zone' ? (n.zone?.w ?? 230) : W,
     h: n.kind === 'zone' ? (n.zone?.h ?? 150) : H,
   });
+  // one box per node — reused for bounds, edges, and rendering below
+  const boxes = new Map(nodes.map((n) => [n.id, boxOf(n)]));
 
-  const minX = Math.min(...nodes.map((n) => boxOf(n).x), ...st.regions.map((r) => r.x)) - 60;
-  const minY = Math.min(...nodes.map((n) => boxOf(n).y), ...st.regions.map((r) => r.y)) - 60;
-  const maxX = Math.max(...nodes.map((n) => boxOf(n).x + boxOf(n).w), ...st.regions.map((r) => r.x + r.w)) + 60;
-  const maxY = Math.max(...nodes.map((n) => boxOf(n).y + boxOf(n).h), ...st.regions.map((r) => r.y + r.h)) + 110;
+  const minX = Math.min(...nodes.map((n) => boxes.get(n.id)!.x), ...st.regions.map((r) => r.x)) - 60;
+  const minY = Math.min(...nodes.map((n) => boxes.get(n.id)!.y), ...st.regions.map((r) => r.y)) - 60;
+  const maxX = Math.max(...nodes.map((n) => boxes.get(n.id)!.x + boxes.get(n.id)!.w), ...st.regions.map((r) => r.x + r.w)) + 60;
+  const maxY = Math.max(...nodes.map((n) => boxes.get(n.id)!.y + boxes.get(n.id)!.h), ...st.regions.map((r) => r.y + r.h)) + 110;
 
   const parts: string[] = [];
   parts.push(
@@ -52,8 +54,8 @@ export function buildArchitectureSvg(st: GameStore): string {
     const a = byId.get(e.source);
     const b = byId.get(e.target);
     if (!a || !b) continue;
-    const ab = boxOf(a);
-    const bb = boxOf(b);
+    const ab = boxes.get(a.id)!;
+    const bb = boxes.get(b.id)!;
     const x1 = ab.x + ab.w;
     const y1 = ab.y + ab.h / 2;
     const x2 = bb.x;
@@ -69,7 +71,7 @@ export function buildArchitectureSvg(st: GameStore): string {
   }
 
   for (const n of nodes) {
-    const b = boxOf(n);
+    const b = boxes.get(n.id)!;
     const spec = specOf(n.kind, n.zone?.template);
     const color = CATEGORY_INFO[spec.category].color;
     const title = n.label ?? (n.kind === 'zone' ? (n.zone?.name ?? 'pool') : spec.name);

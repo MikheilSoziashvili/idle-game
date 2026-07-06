@@ -196,6 +196,7 @@ export interface GameStore {
   contractsRefreshAt: number; // simTime of next board roll
   postmortems: Postmortem[]; // this-run archive, newest first
   activePostmortem: Postmortem | null; // card currently shown
+  postmortemQueue: Postmortem[]; // reports waiting behind the active card (runtime-only)
   drill: DrillState;
   history: HistoryEntry[]; // company timeline (real time)
   mandate: MandateId | null; // active board mandate for this run
@@ -268,6 +269,7 @@ export interface GameStore {
 
   // --- actions: live-ops ---
   setNodeLabel: (id: string, label: string) => void;
+  setNodeTier: (id: string, tier: number | undefined) => void;
   acceptContract: (id: string) => void;
   setContractState: (patch: { offers?: ContractInstance[]; active?: ContractInstance | null; refreshAt?: number }) => void;
   completeContract: () => void;
@@ -379,6 +381,7 @@ function freshRunState() {
     contractsRefreshAt: 0,
     postmortems: [] as Postmortem[],
     activePostmortem: null as Postmortem | null,
+    postmortemQueue: [] as Postmortem[],
     rival: rollRival(),
     dragKind: null as Exclude<NodeKind, 'zone'> | null,
   };
@@ -1073,6 +1076,13 @@ export const useGame = create<GameStore>()((set, get) => ({
     }));
   },
 
+  setNodeTier: (id, tier) => {
+    set((s) => ({
+      nodes: s.nodes.map((n) => (n.id === id ? { ...n, tier } : n)),
+      graphVersion: s.graphVersion + 1,
+    }));
+  },
+
   acceptContract: (id) => {
     const s = get();
     if (s.activeContract) {
@@ -1155,11 +1165,17 @@ export const useGame = create<GameStore>()((set, get) => ({
     const s = get();
     set({
       postmortems: [pm, ...s.postmortems].slice(0, 12),
+      // show it now if the card is free; otherwise queue it behind the current one
       activePostmortem: s.activePostmortem ?? pm,
+      postmortemQueue: s.activePostmortem ? [...s.postmortemQueue, pm] : s.postmortemQueue,
     });
   },
 
-  dismissPostmortem: () => set({ activePostmortem: null }),
+  dismissPostmortem: () =>
+    set((s) => ({
+      activePostmortem: s.postmortemQueue[0] ?? null,
+      postmortemQueue: s.postmortemQueue.slice(1),
+    })),
 
   setRival: (rps) => set((s) => ({ rival: { ...s.rival, rps } })),
 

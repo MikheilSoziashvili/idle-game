@@ -1,6 +1,7 @@
 import { BAL, fmtNum, latencyValueMult, masteryTier, MASTERY_NAMES, pendingSp, levelCapMult, levelOpCostMult } from './balance';
 import { computeDemand, computeMods, roundIndex } from './economy';
 import { DB_KINDS, specOf } from '../catalog/nodes';
+import { TIERS } from '../catalog/tiers';
 import { resolveCase } from '../catalog/challenge';
 import { rollContractOffers } from '../catalog/contracts';
 import type {
@@ -63,6 +64,14 @@ interface SNode {
   wasBooting: boolean;
   lastHintAt: number;
   pendingHint: string | null; // set in pass A, applied when pass B builds the UI
+  // realism layer (persists across ticks)
+  warm01: number; // cache warm-up progress
+  replLag: number; // replication lag seconds (replicas)
+  connOver: number; // connection-pool over-fraction this tick (databases)
+  conns: number;
+  connLimit: number;
+  spark: number[]; // served-rps ring buffer, pushed at 1 Hz
+  role: string; // live activity line, recomputed at 1 Hz
   // per-tick UI outputs
   ui: NodeLive;
 }
@@ -97,6 +106,15 @@ function blankUi(): NodeLive {
     hitPct: -1,
     rpRate: 0,
     hint: null,
+    role: '',
+    spark: [],
+    warm01: -1,
+    conns: 0,
+    connLimit: 0,
+    replLagSec: -1,
+    classIn: zeros(),
+    portIn: {},
+    portOut: {},
   };
 }
 
@@ -147,6 +165,12 @@ export class Engine {
   private sawQueueBuffer = false;
   private sawDbHot = false;
   private sawCdnHit = false;
+  private sawCacheCold = false;
+  private sawReplLag = false;
+  private sawConnPressure = false;
+  private sawRetryStorm = false;
+  private sawShard = false;
+  private sawSplit = false;
 
   // case-study runtime: which scripted events have been injected this run
   private caseInjected = new Set<string>();
@@ -252,6 +276,15 @@ export class Engine {
         wasBooting: false,
         lastHintAt: -999,
         pendingHint: null,
+        // loaded/adopted nodes are assumed warm; fresh placements reset to cold
+        // when their boot completes (see pass A).
+        warm01: 1,
+        replLag: 0,
+        connOver: 0,
+        conns: 0,
+        connLimit: 0,
+        spark: [],
+        role: '',
         ui: blankUi(),
       };
       sn.kind = n.kind;
@@ -364,6 +397,7 @@ export class Engine {
 
     const demand = computeDemand(st, fx.demandMult, mods);
     const byId = new Map(st.nodes.map((n) => [n.id, n]));
+    const hasPooling = st.research.includes('pooling');
 
     // ---- pass A: effective capacity, health, region modifiers ----
     for (const sn of this.nodes.values()) {
@@ -387,6 +421,8 @@ export class Engine {
         sn.booting = booting ? 1 : 0;
         if (sn.wasBooting && !booting && pn.kind !== 'users') {
           sn.health = 1;
+          // a freshly deployed cache comes up COLD — it has nothing in memory yet
+          if (spec.hitRate) sn.warm01 = 0;
           this.log('deploy', `deploy: ${sn.name} online`);
         }
         sn.wasBooting = booting;
@@ -425,19 +461,98 @@ export class Engine {
           this.hintEarly(sn, 'Spot capacity reclaimed — back shortly');
         }
       }
-      // replica without a storage link from a SQL primary barely functions
+      // cache warm-up: caches fill while traffic flows, dump on failure/offline
+      if (spec.hitRate) {
+        if (sn.offline || sn.health < 0.5) sn.warm01 = 0;
+        else if (sn.ready > 0 && sn.inSm > 0.5) sn.warm01 = Math.min(1, sn.warm01 + dt / BAL.cacheWarmSec);
+        if (sn.warm01 < 0.5 && sn.inSm > 2) {
+          this.sawCacheCold = true;
+          this.hintEarly(sn, `Cache warming — ${Math.round((BAL.cacheColdFloor + (1 - BAL.cacheColdFloor) * sn.warm01) * 100)}% effective, misses hit the origin`);
+        }
+      }
+
+      // replica: needs a storage link from a SQL primary, and inherits that
+      // primary's write pressure as replication lag (stale reads earn less)
       if (pn.kind === 'replica') {
-        const linked = (this.inEdges.get(sn.id) ?? []).some((e) => {
+        let primaryUtil = -1;
+        for (const e of this.inEdges.get(sn.id) ?? []) {
           const src = byId.get(e.source);
-          return src && ['postgres', 'mysql', 'mssql'].includes(src.kind);
-        });
-        if (!linked) {
+          if (src && ['postgres', 'mysql', 'mssql'].includes(src.kind)) {
+            primaryUtil = Math.max(primaryUtil, this.nodes.get(e.source)?.utilSm ?? 0);
+          }
+        }
+        if (primaryUtil < 0) {
           cap *= 0.15;
+          sn.replLag = 0;
           this.hintEarly(sn, 'Out of sync — wire a storage link from a SQL primary');
+        } else {
+          if (primaryUtil > BAL.replLagRiseUtil) {
+            const f = (primaryUtil - BAL.replLagRiseUtil) / (1 - BAL.replLagRiseUtil);
+            sn.replLag = Math.min(BAL.replLagMaxSec, sn.replLag + BAL.replLagRisePerSec * f * dt);
+          } else {
+            sn.replLag = Math.max(0, sn.replLag - BAL.replLagDecayPerSec * dt);
+          }
+          if (sn.replLag > BAL.replLagStaleSec) {
+            this.sawReplLag = true;
+            this.hintEarly(sn, `Replication lag ${sn.replLag.toFixed(1)}s — replica reads are stale`);
+          }
+        }
+      }
+
+      // connection-pool pressure: each wired client (× its instances) holds
+      // connections; a database degrades past its pool. PgBouncer research fixes it.
+      sn.connOver = 0;
+      sn.conns = 0;
+      sn.connLimit = 0;
+      if (DB_KINDS.has(pn.kind)) {
+        let conns = 0;
+        for (const e of this.inEdges.get(sn.id) ?? []) {
+          if (e.tPort !== 'data') continue;
+          const srcPn = byId.get(e.source);
+          if (!srcPn || DB_KINDS.has(srcPn.kind)) continue; // replication links aren't client pools
+          conns += Math.max(1, Math.round(this.nodes.get(e.source)?.ready ?? 1));
+        }
+        sn.conns = conns;
+        sn.connLimit = BAL.dbConnBase + BAL.dbConnPerLevel * (pn.level - 1);
+        if (conns > sn.connLimit && !hasPooling) {
+          sn.connOver = (conns - sn.connLimit) / sn.connLimit;
+          cap *= Math.max(BAL.dbConnCapFloor, 1 - BAL.dbConnCapK * sn.connOver);
+          this.sawConnPressure = true;
+          this.hintEarly(sn, `Connection storm — ${conns} clients on a pool of ${sn.connLimit}. Pool, replicate, or upgrade.`);
         }
       }
       sn.effCap = cap;
     }
+
+    // ---- product ingress claims -------------------------------------------
+    // A Product Ingress claims its tier's slice of the firehose only while it
+    // is ready AND wired to a live upstream; otherwise that traffic falls back
+    // to the main Internet. Multiple ingresses on one tier split it evenly.
+    const claim = new Map<number, SNode[]>(); // tierId -> claiming ingress nodes
+    for (const sn of this.nodes.values()) {
+      const pn = byId.get(sn.id)!;
+      if (pn.kind !== 'ingress' || sn.offline || sn.ready <= 0) continue;
+      if (pn.tier === undefined || !demand.perTier.some((p) => p.tierId === pn.tier)) continue;
+      const outs = this.outEdges.get(sn.id)?.get('http') ?? [];
+      const hasLive = outs.some((e) => {
+        const t = this.nodes.get(e.target);
+        return t && !t.offline && t.effCap > 0;
+      });
+      if (!hasLive) continue;
+      if (!claim.has(pn.tier)) claim.set(pn.tier, []);
+      claim.get(pn.tier)!.push(sn);
+    }
+    // the main Internet emits whatever no dedicated front door claimed
+    let residual = 0;
+    const residualMix = zeros();
+    for (const p of demand.perTier) {
+      if (claim.has(p.tierId)) continue;
+      residual += p.offered;
+      for (let c = 0; c < NC; c++) residualMix[c] += p.offered * p.mix[c];
+    }
+    if (residual > 0) for (let c = 0; c < NC; c++) residualMix[c] /= residual;
+    const usersOffered = demand.perTier.length === 0 ? demand.offered : residual;
+    const usersMix = demand.perTier.length === 0 ? demand.mix : residualMix;
 
     // ---- source emission + pass B: process every node ----
     let servedRate = 0;
@@ -448,41 +563,80 @@ export class Engine {
     let readServed = 0;
     let readHits = 0;
     let offeredRate = 0;
+    let echoRate = 0; // retry-storm echo load this tick
 
     for (const sn of this.nodes.values()) {
       const pn = byId.get(sn.id)!;
       const spec = specOf(pn.kind, pn.zone?.template);
 
-      if (spec.special === 'source') {
+      if (spec.special === 'source' || spec.special === 'ingress') {
+        const isMain = spec.special === 'source';
+        sn.ui = blankUi();
+        sn.ui.spark = sn.spark;
+        sn.ui.role = sn.role;
+        sn.ui.health = sn.health;
+        sn.ui.booting = sn.booting;
+        if (!isMain) sn.ui.costRate = this.nodeCostRate(st, sn, byId, mods);
+        // what does THIS front door emit?
+        let emit = 0;
+        let emitMix = demand.mix;
+        if (isMain) {
+          emit = usersOffered;
+          emitMix = usersMix;
+        } else if (pn.tier !== undefined) {
+          const mine = claim.get(pn.tier);
+          if (mine?.includes(sn)) {
+            const p = demand.perTier.find((x) => x.tierId === pn.tier)!;
+            emit = p.offered / mine.length;
+            emitMix = p.mix;
+          }
+        }
         const outs = this.outEdges.get(sn.id)?.get('http') ?? [];
-        // Users only reach targets that are actually up: while everything wired
-        // to the Internet is still provisioning (or dead), the site simply
-        // isn't launched — no traffic, no SLA damage.
+        // Traffic only reaches targets that are actually up: while everything
+        // wired to this door is provisioning (or dead), it simply isn't open.
         const live = outs.filter((e) => {
           const t = this.nodes.get(e.target);
           return t && !t.offline && t.effCap > 0;
         });
-        sn.ui = blankUi();
-        if (live.length === 0) {
-          sn.ui.hint = outs.length === 0 ? 'Not launched — wire this to a server' : 'Waiting for upstream to come online…';
-          sn.ui.inRps = 0;
+        if (!isMain && sn.booting > 0 && sn.ready === 0) {
+          sn.ui.hint = 'provisioning…';
           continue;
         }
-        offeredRate = demand.offered;
+        if (!isMain && pn.tier === undefined) {
+          sn.ui.hint = 'Bind a product in the Inspector';
+          continue;
+        }
+        if (live.length === 0) {
+          sn.ui.hint =
+            outs.length === 0
+              ? isMain
+                ? 'Not launched — wire this to a server'
+                : 'Wire this to a server — traffic falls back to the Internet'
+              : 'Waiting for upstream to come online…';
+          continue;
+        }
+        if (!isMain && emit <= 0.001) {
+          sn.ui.hint = 'Product not launched — traffic stays on the Internet';
+          continue;
+        }
+        if (isMain && emit <= 0.001 && claim.size > 0) {
+          sn.ui.hint = 'All products routed via dedicated ingress';
+          continue;
+        }
+        offeredRate += emit;
         // DNS round-robin: the raw Internet splits evenly. Load balancers split smart.
         const weights = this.splitWeights(live, mods.smartSplitAll);
         for (let i = 0; i < live.length; i++) {
           for (let c = 0; c < NC; c++) {
-            const r = demand.offered * demand.mix[c] * weights[i];
+            const r = emit * emitMix[c] * weights[i];
             if (r > 0) {
               live[i].nRates[c] += r;
               live[i].nLats[c] = 0;
             }
           }
         }
-        sn.ui.inRps = demand.offered;
-        sn.ui.served = demand.offered;
-        sn.ui.util = 0;
+        sn.ui.inRps = emit;
+        sn.ui.served = emit;
         continue;
       }
 
@@ -564,6 +718,8 @@ export class Engine {
         ui.instances = sn.ready;
         ui.booting = sn.booting;
         ui.costRate = this.nodeCostRate(st, sn, byId, mods);
+        ui.spark = sn.spark;
+        ui.role = sn.role;
         if (spec.special === 'autoscaler') {
           const wired = (this.outEdges.get(sn.id)?.get('control') ?? []).length > 0;
           if (!wired) ui.hint = 'Wire the control port to a Zone';
@@ -598,6 +754,8 @@ export class Engine {
       const queueWaitMs = eff > 0 ? (Math.max(0, wBack - eff * dt) / eff) * 1000 : totalBacklog > 0 ? 99999 : 0;
       const congestion = 1 + BAL.latCongestionK * Math.pow(Math.min(1.5, Math.max(0, sn.utilSm)), BAL.latCongestionPow);
       let effLatMs = spec.baseLatencyMs * congestion + queueWaitMs;
+      // connection-pool pressure: over-subscribed databases answer slowly
+      if (sn.connOver > 0) effLatMs *= 1 + BAL.dbConnLatK * sn.connOver;
       if (spec.special === 'lambda') {
         // cold-start penalty when demand outruns warm concurrency
         const shortfall = Math.max(0, sn.inSm - sn.effCap) / Math.max(1, sn.inSm);
@@ -612,6 +770,9 @@ export class Engine {
 
       const budget = eff * dt;
       const drawFrac = wBack <= budget || wBack === 0 ? 1 : budget / wBack;
+      // realism: cold caches hit less; lagging replicas serve stale reads
+      const warmMult = spec.hitRate ? BAL.cacheColdFloor + (1 - BAL.cacheColdFloor) * sn.warm01 : 1;
+      const staleReads = pn.kind === 'replica' && sn.replLag > BAL.replLagStaleSec;
 
       let servedHere = 0;
       let hitsHere = 0;
@@ -627,13 +788,30 @@ export class Engine {
         if (reqLat > CLASS_TIMEOUT_MS[c]) {
           dropRate += take / dt;
           ui.drops += take / dt;
-          this.hint(sn, spec.special === 'queue' ? 'Consumers too slow — jobs are expiring' : 'Requests timing out — add capacity upstream');
+          // retry storm: timed-out users hit refresh — a share of the load
+          // comes straight back. Shedding at the door (429s) never times out,
+          // so gateways/rate-limits break the loop upstream.
+          if (c !== JOB) {
+            const echo = take * BAL.retryEchoFactor;
+            const prev = sn.backlog[c];
+            sn.backlog[c] += echo;
+            sn.backlogLat[c] = prev + echo > 0 ? (sn.backlogLat[c] * prev) / (prev + echo) : 0; // retries start fresh
+            echoRate += echo / dt;
+          }
+          this.hint(
+            sn,
+            spec.special === 'queue'
+              ? 'Consumers too slow — jobs are expiring'
+              : c !== JOB
+                ? 'Timeouts breeding retries — shed load or add capacity'
+                : 'Requests timing out — add capacity upstream',
+          );
           continue;
         }
 
         let rest = take;
         let serveNow = 0;
-        const hr = Math.min(0.97, (spec.hitRate?.[cls] ?? 0) + (spec.hitRate?.[cls] ? sn.cacheBonus : 0));
+        const hr = Math.min(0.97, (spec.hitRate?.[cls] ?? 0) * warmMult + (spec.hitRate?.[cls] ? sn.cacheBonus : 0));
         if (hr > 0) {
           serveNow += take * hr;
           rest = take * (1 - hr);
@@ -681,7 +859,8 @@ export class Engine {
                 ? 0.6
                 : 1
               : latencyValueMult(reqLat, demand.latSensitive);
-          revenue += serveNow * demand.value[c] * latMult * mods.revenueMult;
+          const staleMult = staleReads && c === 2 ? BAL.replStaleValueMult : 1;
+          revenue += serveNow * demand.value[c] * latMult * staleMult * mods.revenueMult;
           if (spec.perServeCost) perServeCosts += serveNow * spec.perServeCost;
           // p95 is user-facing: async jobs are latency-tolerant by design and
           // would otherwise drown the gauge in queue-wait seconds.
@@ -706,12 +885,20 @@ export class Engine {
       ui.booting = sn.booting;
       ui.costRate = this.nodeCostRate(st, sn, byId, mods);
       ui.hitPct = missableReads > 0.001 ? hitsHere / missableReads : spec.hitRate?.read || spec.hitRate?.static ? 0 : -1;
+      ui.classIn = intake.slice();
+      ui.warm01 = spec.hitRate ? sn.warm01 : -1;
+      ui.replLagSec = pn.kind === 'replica' ? sn.replLag : -1;
+      ui.conns = sn.conns;
+      ui.connLimit = sn.connLimit;
+      ui.spark = sn.spark;
+      ui.role = sn.role;
       if (sn.offline) ui.hint = 'OFFLINE';
       else if (sn.booting > 0 && sn.ready === 0) ui.hint = 'provisioning…';
       else if (!ui.hint && sn.pendingHint) ui.hint = sn.pendingHint;
       sn.pendingHint = null;
       sn.ui = ui;
     }
+    if (echoRate > 3) this.sawRetryStorm = true;
 
     // ---- swap edge buffers ----
     for (const e of this.edges.values()) {
@@ -723,6 +910,11 @@ export class Engine {
       }
       const total = e.rates.reduce((a, b) => a + b, 0);
       e.rpsSm += (total - e.rpsSm) * 0.25;
+      // per-port flow, for the port-activity glow on cards
+      const src = this.nodes.get(e.source);
+      const tgt = this.nodes.get(e.target);
+      if (src) src.ui.portOut[e.sPort] = (src.ui.portOut[e.sPort] ?? 0) + e.rpsSm;
+      if (tgt) tgt.ui.portIn[e.tPort] = (tgt.ui.portIn[e.tPort] ?? 0) + e.rpsSm;
     }
 
     // ---- research points ----
@@ -844,6 +1036,12 @@ export class Engine {
     this.secAcc += dt;
     if (this.secAcc >= 1) {
       this.secAcc = 0;
+      // spark history + live role lines (cheap, so only at 1 Hz)
+      for (const sn of this.nodes.values()) {
+        sn.spark.push(Math.round(sn.ui.served * 10) / 10);
+        if (sn.spark.length > BAL.sparkLen) sn.spark.shift();
+        sn.role = this.roleOf(sn, byId);
+      }
       this.autoscaler.evaluate(
         this.store,
         (id) => this.nodes.get(id)?.utilSm ?? 0,
@@ -889,7 +1087,7 @@ export class Engine {
     const edgeStats: Record<string, EdgeLive> = {};
     for (const e of this.edges.values()) {
       const t = this.nodes.get(e.target);
-      edgeStats[e.id] = { rps: e.rpsSm, util: Math.min(1.5, Math.max(t?.utilSm ?? 0, 0)) };
+      edgeStats[e.id] = { rps: e.rpsSm, util: Math.min(1.5, Math.max(t?.utilSm ?? 0, 0)), classRates: e.rates.slice() };
     }
     const live: LiveState = {
       gauges: {
@@ -1130,14 +1328,82 @@ export class Engine {
   // ------------------------------------------------------------- helpers --
   private splitWeights(edges: SEdge[], smart: boolean): number[] {
     if (edges.length === 1) return [1];
-    if (!smart) return edges.map(() => 1 / edges.length);
+    if (!smart) return edges.map(() => 1 / edges.length); // round-robin: blind to health & headroom
     const raw = edges.map((e) => {
       const t = this.nodes.get(e.target);
       if (!t) return 0.02;
-      return Math.max(0.02, t.effCap * (1.1 - Math.min(1, t.utilSm)));
+      // health checks: a smart balancer pulls failing targets from rotation
+      if (t.health < BAL.healthCheckMin) return 0.001;
+      return Math.max(0.02, t.effCap * (1.1 - Math.min(1, t.utilSm))) * Math.max(0.25, t.health);
     });
     const sum = raw.reduce((acc, v) => acc + v, 0);
     return raw.map((v) => v / sum);
+  }
+
+  /**
+   * One plain-English line: what is this box DOING right now? Recomputed at
+   * 1 Hz; shown on the card, in the Inspector, and in the exported design doc.
+   */
+  private roleOf(sn: SNode, byId: Map<string, GameStore['nodes'][number]>): string {
+    const pn = byId.get(sn.id);
+    if (!pn) return '';
+    const spec = specOf(pn.kind, pn.zone?.template);
+    const ui = sn.ui;
+    if (spec.special === 'source') return '';
+    if (sn.offline) return 'offline';
+    if (sn.booting > 0 && sn.ready === 0) return 'provisioning…';
+    const outs = [...(this.outEdges.get(sn.id)?.values() ?? [])].flat().filter((e) => e.sPort !== 'control');
+    const targetNames = [...new Set(outs.map((e) => this.nodes.get(e.target)?.name).filter(Boolean))] as string[];
+    const toTxt =
+      targetNames.length === 0 ? '' : targetNames.length <= 2 ? `→ ${targetNames.join(', ')}` : `→ ${targetNames.length} targets`;
+    switch (spec.special) {
+      case 'ingress': {
+        const t = pn.tier !== undefined ? TIERS[pn.tier - 1] : undefined;
+        return t ? `${t.name} · dedicated front door` : 'unbound — pick a product';
+      }
+      case 'shard': {
+        const shardCount = new Set(outs.map((e) => e.target)).size; // distinct shards, not distinct names
+        return shardCount > 1 ? `partitioning r/w → ${shardCount} shards` : `single shard ${toTxt} — add more`;
+      }
+      case 'metrics':
+        return `sampling ${fmtNum(this.servedEma)} rps → research`;
+      case 'grafana':
+        return 'dashboards · research ×1.5';
+      case 'autoscaler':
+        return (this.outEdges.get(sn.id)?.get('control') ?? []).length > 0 ? 'scaling zones on utilization' : 'no zone attached';
+      case 'k8s':
+        return 'orchestrating · heal + bin-pack';
+      case 'cicd':
+        return 'fast deploys · cheaper upgrades';
+      case 'billing':
+        return 'settling revenue instantly';
+      case 'lb':
+        return `health-checked split ${toTxt}`;
+      case 'apigw':
+        return `rate-limited ingress ${toTxt}`;
+      case 'queue':
+        return ui.queue > 5 ? `buffering ${fmtNum(ui.queue)} jobs ${toTxt}` : `job bus ${toTxt}`;
+      case 'lambda':
+        return `elastic · ${fmtNum(sn.effCap)} warm capacity`;
+    }
+    if (pn.kind === 'haproxy') return `round-robin ${toTxt}`;
+    if (pn.kind === 'replica') return sn.replLag > 0.2 ? `read fan-out · lag ${sn.replLag.toFixed(1)}s` : 'read fan-out · in sync';
+    if (spec.hitRate) {
+      const hit = ui.hitPct >= 0 ? `${Math.round(ui.hitPct * 100)}% hit` : 'cache';
+      if (sn.warm01 < 0.85 && sn.inSm > 0.5) return `${hit} · warming ${Math.round(sn.warm01 * 100)}%`;
+      return targetNames.length > 0 ? `${hit} · shielding ${targetNames[0]}` : `${hit} at the edge`;
+    }
+    if (DB_KINDS.has(pn.kind)) {
+      const conn = sn.connLimit > 0 && sn.conns > 0 ? ` · conns ${sn.conns}/${sn.connLimit}` : '';
+      return `r ${fmtNum(ui.classIn[2])} · w ${fmtNum(ui.classIn[3])}/s${conn}`;
+    }
+    if (pn.kind === 'worker' || pn.zone?.template === 'worker') return `draining ${fmtNum(ui.served)} jobs/s`;
+    if (pn.kind === 's3') return `object store · ${fmtNum(ui.served)}/s`;
+    if (pn.kind === 'elastic') return `search index · ${fmtNum(ui.served)}/s`;
+    const servedTxt = ui.served > 0.05 ? `serving ${fmtNum(ui.served)}/s` : '';
+    const fwd = outs.reduce((a, e) => a + e.rpsSm, 0);
+    const fwdTxt = fwd > 0.05 ? `proxying ${toTxt}` : '';
+    return [servedTxt, fwdTxt].filter(Boolean).join(' · ') || (ui.inRps > 0.05 ? 'processing' : 'idle');
   }
 
   private nodeCostRate(st: GameStore, sn: SNode, byId: Map<string, GameStore['nodes'][number]>, mods: GlobalMods): number {
@@ -1203,6 +1469,8 @@ export class Engine {
     if (st.nodes.some((n) => n.kind !== 'zone' && specOf(n.kind).special === 'metrics' && !n.disabled)) complete('observability');
     if (st.tiers.includes(2)) complete('tier-two');
     if (st.nodes.some((n) => n.kind === 'stripe')) complete('auto-billing');
+    if (this.sawSplit) complete('decompose');
+    if (this.sawShard) complete('first-shard');
     if (pendingSp(lifetimeRev) >= BAL.prestigeMinSp) complete('series-ready');
     if (atMarketCap && Math.floor(this.simTime) % 60 === 0) {
       this.log('info', 'market cap reached for this funding round — raise a round to grow further');
@@ -1274,6 +1542,12 @@ export class Engine {
     L('redundancy', this.events.hasActiveIncident());
     L('cdn-edge', this.sawCdnHit);
     L('rearchitect', pendingSp(lifetimeRev) >= BAL.prestigeMinSp);
+    L('cache-warm', this.sawCacheCold);
+    L('repl-lag', this.sawReplLag);
+    L('conn-pool', this.sawConnPressure);
+    L('retry-storm', this.sawRetryStorm);
+    L('microservices', this.sawSplit);
+    L('sharding', this.sawShard);
   }
 
   private checkAchievements(st: GameStore, byId: Map<string, GameStore['nodes'][number]>, profitNow: number) {
@@ -1298,8 +1572,25 @@ export class Engine {
     if (this.stats.fourNinesStreak >= 300) grant('four-nines');
     if (this.p95 > 0 && this.p95 < 50 && this.servedEma >= 100) grant('speed-demon');
     if (this.servedEma >= 1000) grant('kilo-rps');
+    if (this.servedEma >= 100000) grant('hyperscale');
     if (this.stats.prestiges >= 1) grant('exit-strategy');
     if (profitNow >= 100) grant('money-printer');
+
+    // --- big-system patterns ---
+    // sharding: a router actually splitting WRITES across 2+ shards
+    for (const [id, outs] of this.outEdges) {
+      const n = byId.get(id);
+      if (n?.kind !== 'shardrouter') continue;
+      const writing = (outs.get('data') ?? []).filter((e) => e.rates[3] > 0.2);
+      if (writing.length >= 2) {
+        this.sawShard = true;
+        grant('sharded');
+      }
+    }
+    // service decomposition: dedicated product front doors carrying traffic
+    const doorsLive = [...this.nodes.values()].filter((sn) => sn.kind === 'ingress' && sn.ui.served > 0.5);
+    if (doorsLive.length >= 1) this.sawSplit = true;
+    if (doorsLive.length >= 2) grant('decomposed');
 
     // --- combo discoveries: reward architectures worth experimenting toward ---
     const hitting = (kind: string) =>

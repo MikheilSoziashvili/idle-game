@@ -85,6 +85,29 @@ const GLYPH: Partial<Record<NodeKind, { el: React.ReactNode; color: string; titl
       </g>
     ),
   },
+  ingress: {
+    title: 'Product Ingress',
+    color: '#8C4FFF',
+    el: (
+      <g fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3.8 9.8L12 3.8l8.2 6" />
+        <path d="M6.2 9.8V20h11.6V9.8" />
+        <path d="M12 20v-5.5M9.8 12h4.4" />
+      </g>
+    ),
+  },
+  shardrouter: {
+    title: 'Shard Router',
+    color: '#a78bfa',
+    el: (
+      <g fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3.5 12h4M7.5 12l6.5-6.2M7.5 12H14M7.5 12l6.5 6.2" />
+        <rect x="16" y="3.4" width="4.6" height="4.6" rx="1" />
+        <rect x="16" y="9.7" width="4.6" height="4.6" rx="1" />
+        <rect x="16" y="16" width="4.6" height="4.6" rx="1" />
+      </g>
+    ),
+  },
   s3: {
     title: 'S3 (object storage)',
     color: '#3F8624', // AWS storage green

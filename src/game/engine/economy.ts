@@ -8,12 +8,20 @@ import type { GlobalMods } from './types';
 // Each launched tier contributes (baseRps × company scale) of its own mix;
 // the blended per-class $ value weights each tier by its share of that class.
 
+/** One launched tier's slice of the demand — the basis for Product Ingress routing. */
+export interface TierDemand {
+  tierId: number;
+  offered: number; // req/s this tier contributes (slices sum to DemandProfile.offered)
+  mix: number[]; // this tier's own class mix
+}
+
 export interface DemandProfile {
   offered: number; // total req/s entering the platform this tick
   mix: number[]; // per-class fractions
   value: number[]; // blended $ per served request per class
   latSensitive: boolean;
   atMarketCap: boolean;
+  perTier: TierDemand[]; // empty in case studies (scripted demand is monolithic)
 }
 
 export function computeDemand(st: GameStore, eventDemandMult: number, mods: GlobalMods): DemandProfile {
@@ -41,7 +49,7 @@ export function computeDemand(st: GameStore, eventDemandMult: number, mods: Glob
   if (st.caseId) {
     const def = resolveCase(st.caseId, st.customCases);
     if (def) {
-      return { offered: def.baseRps * eventDemandMult, mix, value, latSensitive, atMarketCap: false };
+      return { offered: def.baseRps * eventDemandMult, mix, value, latSensitive, atMarketCap: false, perTier: [] };
     }
   }
 
@@ -52,12 +60,22 @@ export function computeDemand(st: GameStore, eventDemandMult: number, mods: Glob
     ? st.sandboxDemand
     : st.scale * totalBase * mods.demandMult;
   const capped = Math.min(rawOffered * eventDemandMult, st.sandbox ? Infinity : rpsCap * eventDemandMult);
+  // each launched tier owns a share of the firehose proportional to its baseRps
+  const perTier: TierDemand[] = [];
+  if (totalBase > 0) {
+    for (const id of st.tiers) {
+      const tier = TIERS[id - 1];
+      if (!tier) continue;
+      perTier.push({ tierId: id, offered: capped * (tier.baseRps / totalBase), mix: tier.mix });
+    }
+  }
   return {
     offered: capped,
     mix,
     value,
     latSensitive,
     atMarketCap: !st.sandbox && rawOffered >= rpsCap * 0.98,
+    perTier,
   };
 }
 

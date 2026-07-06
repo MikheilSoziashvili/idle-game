@@ -11,6 +11,15 @@ export const CLASS_LABEL: Record<RequestClass, string> = {
   job: 'job',
 };
 
+/** Fixed accent per request class — class-mix strips, edge labels, legends. */
+export const CLASS_COLORS: Record<RequestClass, string> = {
+  static: '#58a6ff',
+  api: '#f0a44b',
+  read: '#a78bfa',
+  write: '#e5534b',
+  job: '#34d1bf',
+};
+
 /**
  * Typed ports. Edges only connect matching types. Three traffic flavors plus
  * control — deliberately small: web (http) carries requests between front-line
@@ -29,10 +38,12 @@ export const PORT_WORD: Record<PortType, string> = {
 
 export type NodeKind =
   | 'users'
+  | 'ingress'
   | 'nginx'
   | 'lb'
   | 'haproxy'
   | 'apigw'
+  | 'shardrouter'
   | 'cdn'
   | 'fastly'
   | 'varnish'
@@ -103,6 +114,8 @@ export interface NodeSpec {
   singleton?: boolean; // only one may exist (stripe, cicd, k8s, grafana)
   special?:
     | 'source'
+    | 'ingress'
+    | 'shard'
     | 'lb'
     | 'queue'
     | 'lambda'
@@ -138,6 +151,7 @@ export interface PlacedNode {
   label?: string; // player-given name; ops console + card use it
   bootUntil?: number; // simTime when provisioning finishes
   disabled?: boolean;
+  tier?: number; // product ingress: which launched tier's traffic it carries
   zone?: ZoneState;
 }
 
@@ -184,11 +198,22 @@ export interface NodeLive {
   hitPct: number; // cache hit share of reads, -1 if n/a
   rpRate: number; // research points/s (observability nodes)
   hint: string | null; // misconfiguration hint
+  // realism layer — what this box is doing and how its dependencies feel it
+  role: string; // live plain-English activity line ('' when idle)
+  spark: number[]; // served-rps history, 1 Hz, newest last (shared ref, engine-owned)
+  warm01: number; // cache warm-up 0..1, -1 if not a cache
+  conns: number; // upstream client connections (databases), 0 if n/a
+  connLimit: number; // tolerated connections before pool pressure, 0 if n/a
+  replLagSec: number; // replication lag, -1 if not a replica
+  classIn: number[]; // per-class in-rates [static, api, read, write, job]
+  portIn: Partial<Record<PortType, number>>; // rps arriving per in-port type
+  portOut: Partial<Record<PortType, number>>; // rps leaving per out-port type
 }
 
 export interface EdgeLive {
   rps: number;
   util: number; // saturation of the downstream target
+  classRates: number[]; // per-class rps on this wire [static, api, read, write, job]
 }
 
 export interface Gauges {

@@ -20,8 +20,8 @@ export const BAL = {
   //   scale' = growthRate * repFactor(rep) * scale * (1 - scale/scaleCap)
   // Traffic offered = scale * sum(launched tier baseRps), clamped by rpsCap.
   growthRate: 0.011, // per sim-second at repFactor 1 (early doubling ~90s)
-  scaleCaps: [40, 150, 600, 2500, 10000, 50000], // per funding round index
-  rpsCaps: [260, 900, 3200, 12000, 45000, 160000], // hard market cap per round
+  scaleCaps: [40, 150, 600, 2500, 10000, 50000, 200000, 800000], // per funding round index
+  rpsCaps: [260, 900, 3200, 12000, 45000, 160000, 520000, 1600000], // hard market cap per round
   repFactor: (rep: number) => 0.22 + 1.28 * Math.pow(Math.max(0, rep) / 100, 1.4),
 
   // --- latency & backpressure ------------------------------------------------
@@ -110,8 +110,8 @@ export const BAL = {
   // Scale Points pending = floor(sqrt(lifetimeRevenue / spDivisor))
   spDivisor: 2500,
   prestigeMinSp: 2,
-  roundNames: ['Pre-seed', 'Seed', 'Series A', 'Series B', 'Series C', 'Series D'],
-  roundSpGate: [0, 2, 8, 20, 50, 120], // total SP banked to reach round i
+  roundNames: ['Pre-seed', 'Seed', 'Series A', 'Series B', 'Series C', 'Series D', 'Series E', 'IPO'],
+  roundSpGate: [0, 2, 8, 20, 50, 120, 260, 550], // total SP banked to reach round i
   perkMaxLevel: 10,
   // Perk effect per level:
   perkThroughput: 0.08,
@@ -162,6 +162,35 @@ export const BAL = {
   pressureEasyGapMult: 1.6,
   pressureHardGapMult: 0.72,
   pressureEasySpikeCap: 2.4,
+
+  // --- realism layer -----------------------------------------------------------
+  // Cold caches: a freshly booted cache serves a fraction of its nominal hit
+  // rate and warms toward 100% while traffic flows (cache fill).
+  cacheWarmSec: 40, // seconds of live traffic to fully warm
+  cacheColdFloor: 0.25, // fraction of nominal hit rate when stone cold
+  // Replication lag: pushing a primary's write utilization past the knee makes
+  // its replicas fall behind; stale reads earn less (users see old data).
+  replLagRiseUtil: 0.7, // primary util above which lag grows
+  replLagRisePerSec: 0.5, // lag gained per second at util 1.0
+  replLagDecayPerSec: 0.4, // lag shed per second when the primary is calm
+  replLagMaxSec: 8,
+  replLagStaleSec: 2, // above this, replica reads count as stale
+  replStaleValueMult: 0.85,
+  // Connection-pool pressure: every distinct client (app box / zone instance)
+  // holds connections; databases degrade past their pool size. The 'pooling'
+  // research (PgBouncer) removes the penalty.
+  dbConnBase: 6, // clients a level-1 database tolerates
+  dbConnPerLevel: 3, // extra tolerated clients per level
+  dbConnLatK: 0.9, // latency multiplier per 1.0 over-fraction
+  dbConnCapK: 0.35, // capacity lost per 1.0 over-fraction
+  dbConnCapFloor: 0.55, // capacity never drops below this fraction
+  // Retry storms: a timed-out user request comes BACK as a retry — overload
+  // begets overload. Shedding at the door (429s) avoids timeouts entirely.
+  retryEchoFactor: 0.3, // share of timed-out non-job requests that retry
+  // Health checks: smart balancers pull targets below this health from rotation.
+  // Round-robin splitters (DNS, HAProxy default) keep sending — that's the trade.
+  healthCheckMin: 0.5,
+  sparkLen: 48, // per-node served-rps history samples (1 Hz)
 
   // --- first-failure insurance -----------------------------------------------------
   insuranceWindowSec: 30,

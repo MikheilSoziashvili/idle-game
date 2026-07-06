@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { BAL, MASTERY_NAMES, fmtMoney, fmtNum, levelCapMult, masteryTier, upgradeCost } from '../../game/engine/balance';
 import { CATEGORY_INFO, REPLACE_MAP, SPECS, specOf } from '../../game/catalog/nodes';
+import { TIERS } from '../../game/catalog/tiers';
 import type { PlacedNode, RegionPolicies } from '../../game/engine/types';
 import { isKindUnlocked, useGame } from '../../game/state/store';
 import { zoneHasController, zoneSpawnCost } from '../../game/systems/zoning';
@@ -64,44 +65,131 @@ export default function Inspector() {
 
 function LiveStats({ id, showHit }: { id: string; showHit: boolean }) {
   const live = useGame((s) => s.live.nodeStats[id]);
+  const pooled = useGame((s) => s.research.includes('pooling'));
   if (!live) return null;
   return (
-    <div className="insp-stats">
-      <span>
-        <span className="k">in</span>
-        {fmtNum(live.inRps)} rps
-      </span>
-      <span>
-        <span className="k">served</span>
-        {fmtNum(live.served)} rps
-      </span>
-      <span>
-        <span className="k">latency</span>
-        {fmtNum(live.latencyMs)} ms
-      </span>
-      <span>
-        <span className="k">queue</span>
-        {live.queue}
-      </span>
-      <span style={{ color: rampColor(Math.min(1, live.util)) }}>
-        <span className="k">util</span>
-        {Math.round(live.util * 100)}%
-      </span>
-      <span>
-        <span className="k">cost</span>${live.costRate.toFixed(2)}/s
-      </span>
-      {live.drops > 0.05 && (
-        <span style={{ color: 'var(--bad)' }}>
-          <span className="k">drops</span>
-          {fmtNum(live.drops)}/s
-        </span>
-      )}
-      {showHit && live.hitPct >= 0 && (
+    <>
+      {live.role && <p className="insp-role mono">▸ {live.role}</p>}
+      <div className="insp-stats">
         <span>
-          <span className="k">cache hit</span>
-          {Math.round(live.hitPct * 100)}%
+          <span className="k">in</span>
+          {fmtNum(live.inRps)} rps
         </span>
-      )}
+        <span>
+          <span className="k">served</span>
+          {fmtNum(live.served)} rps
+        </span>
+        <span>
+          <span className="k">latency</span>
+          {fmtNum(live.latencyMs)} ms
+        </span>
+        <span>
+          <span className="k">queue</span>
+          {live.queue}
+        </span>
+        <span style={{ color: rampColor(Math.min(1, live.util)) }}>
+          <span className="k">util</span>
+          {Math.round(live.util * 100)}%
+        </span>
+        <span>
+          <span className="k">cost</span>${live.costRate.toFixed(2)}/s
+        </span>
+        {live.drops > 0.05 && (
+          <span style={{ color: 'var(--bad)' }}>
+            <span className="k">drops</span>
+            {fmtNum(live.drops)}/s
+          </span>
+        )}
+        {showHit && live.hitPct >= 0 && (
+          <span>
+            <span className="k">cache hit</span>
+            {Math.round(live.hitPct * 100)}%
+          </span>
+        )}
+        {showHit && live.warm01 >= 0 && live.warm01 < 0.99 && (
+          <span style={{ color: 'var(--amber, #b57700)' }}>
+            <span className="k">warm-up</span>
+            {Math.round(live.warm01 * 100)}%
+          </span>
+        )}
+        {live.connLimit > 0 && (
+          <span style={{ color: !pooled && live.conns > live.connLimit ? 'var(--bad)' : undefined }} title={pooled ? 'PgBouncer researched: connection storms absorbed' : 'Each wired client (× its instances) holds connections'}>
+            <span className="k">conns</span>
+            {live.conns}/{pooled ? '∞' : live.connLimit}
+          </span>
+        )}
+        {live.replLagSec >= 0 && (
+          <span style={{ color: live.replLagSec > BAL.replLagStaleSec ? 'var(--bad)' : undefined }} title="Replication lag: how far this replica trails its primary. Lagging replicas serve stale reads (worth less).">
+            <span className="k">repl lag</span>
+            {live.replLagSec.toFixed(1)}s
+          </span>
+        )}
+      </div>
+    </>
+  );
+}
+
+/** Product Ingress: bind ONE launched product; its traffic enters here instead of the Internet. */
+function TierBinding({ node }: { node: PlacedNode }) {
+  const tiers = useGame((st) => st.tiers);
+  const setTier = useGame((st) => st.setNodeTier);
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <select
+        className="insp-rename"
+        value={node.tier ?? ''}
+        onChange={(e) => setTier(node.id, e.target.value ? Number(e.target.value) : undefined)}
+        aria-label="Bound product"
+        style={{ width: '100%' }}
+      >
+        <option value="">— bind a product —</option>
+        {tiers.map((id) => (
+          <option key={id} value={id}>
+            {TIERS[id - 1]?.name ?? `Tier ${id}`}
+          </option>
+        ))}
+      </select>
+      <div style={{ fontSize: 10, color: 'var(--faint)', marginTop: 3 }}>
+        The bound product's traffic enters HERE instead of the Internet — give it a stack of its own.
+      </div>
+    </div>
+  );
+}
+
+/** Who feeds this node, and whom it feeds — the co-working made explicit. */
+function Connections({ id }: { id: string }) {
+  const nodes = useGame((s) => s.nodes);
+  const edges = useGame((s) => s.edges);
+  const edgeStats = useGame((s) => s.live.edgeStats);
+  const select = useGame((s) => s.setSelection);
+
+  const nameFor = (nid: string) => {
+    const n = nodes.find((x) => x.id === nid);
+    if (!n) return nid;
+    return n.label ?? n.zone?.name ?? specOf(n.kind, n.zone?.template).name;
+  };
+  const rowsIn = edges.filter((e) => e.target === id && !e.sourceHandle.startsWith('ctl'));
+  const rowsOut = edges.filter((e) => e.source === id && !e.sourceHandle.startsWith('ctl'));
+  if (rowsIn.length === 0 && rowsOut.length === 0) return null;
+
+  const Row = ({ other, eid, dir }: { other: string; eid: string; dir: 'in' | 'out' }) => (
+    <button className="insp-conn" onClick={() => select([other], [])} title="Select this node">
+      <span className="mono" style={{ color: 'var(--faint)' }}>{dir === 'in' ? '⭠' : '⭢'}</span>
+      <span className="conn-name">{nameFor(other)}</span>
+      <span className="mono conn-rps">{fmtNum(edgeStats[eid]?.rps ?? 0)} rps</span>
+    </button>
+  );
+
+  return (
+    <div className="insp-conns">
+      {rowsIn.length > 0 && <div className="k">fed by</div>}
+      {rowsIn.map((e) => (
+        <Row key={e.id} other={e.source} eid={e.id} dir="in" />
+      ))}
+      {rowsOut.length > 0 && <div className="k">feeds</div>}
+      {rowsOut.map((e) => (
+        <Row key={e.id} other={e.target} eid={e.id} dir="out" />
+      ))}
     </div>
   );
 }
@@ -154,11 +242,13 @@ function NodePanel({ node }: { node: PlacedNode }) {
       <a className="insp-docs" href={spec.docsUrl} target="_blank" rel="noopener noreferrer">
         Official {spec.name} docs ↗
       </a>
+      {node.kind === 'ingress' && <TierBinding node={node} />}
       <LiveStats id={node.id} showHit={Boolean(spec.hitRate)} />
+      <Connections id={node.id} />
 
       {!isSource && (
         <div className="insp-actions">
-          {spec.capacity > 0 && (
+          {spec.capacity > 0 && spec.capacity < 1e8 && (
             <button
               className="primary"
               disabled={maxed || (!sandbox && cash < upCost)}
@@ -168,7 +258,7 @@ function NodePanel({ node }: { node: PlacedNode }) {
               {maxed ? 'Max level' : `Upgrade → L${node.level + 1} · ${fmtMoney(upCost)}`}
             </button>
           )}
-          {spec.capacity > 0 && !maxed && (
+          {spec.capacity > 0 && spec.capacity < 1e8 && !maxed && (
             <div style={{ fontSize: 10, color: 'var(--faint)', fontFamily: 'var(--mono)' }}>
               capacity {fmtNum(spec.capacity * levelCapMult(node.level))} → {fmtNum(spec.capacity * levelCapMult(node.level + 1))} rps
             </div>
@@ -248,6 +338,7 @@ function ZonePanel({ node }: { node: PlacedNode }) {
         Official {spec.name} docs ↗
       </a>
       <LiveStats id={node.id} showHit={false} />
+      <Connections id={node.id} />
 
       <div className="insp-actions">
         <div className="row">

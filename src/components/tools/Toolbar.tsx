@@ -4,6 +4,7 @@ import type { Tool } from '../../game/engine/types';
 import { unlockedTools, useGame } from '../../game/state/store';
 import { zoneUnitKinds } from '../../game/systems/zoning';
 import { downloadArchitectureSvg } from '../../game/systems/photo';
+import { downloadArchitectureMd } from '../../game/systems/docgen';
 import { SPECS } from '../../game/catalog/nodes';
 
 const TOOLS: { id: Tool; icon: string; key: string; name: string; desc: string }[] = [
@@ -89,6 +90,24 @@ export default function Toolbar() {
           <span className="tool-tip">
             Photo mode
             <small>Export the graph as a clean SVG architecture diagram</small>
+          </span>
+        </button>
+        <button
+          className="tool-btn"
+          onClick={() => {
+            const ok = downloadArchitectureMd(useGame.getState());
+            useGame.getState().addToast(
+              ok ? 'ok' : 'warn',
+              ok ? 'Design doc exported' : 'Nothing to document',
+              ok ? 'Markdown design doc: components, flows, SLOs, risks.' : 'Place some infrastructure first.',
+            );
+          }}
+          aria-label="Export design doc (Markdown)"
+        >
+          ¶
+          <span className="tool-tip">
+            Design doc
+            <small>Export a Markdown design doc — components, traffic flows, SLOs, risks & incident history</small>
           </span>
         </button>
       </div>

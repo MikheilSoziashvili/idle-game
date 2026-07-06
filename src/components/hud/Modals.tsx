@@ -799,6 +799,13 @@ function HelpPanel() {
   const seen = useGame((s) => s.lessonsSeen);
   return (
     <>
+    <p style={{ margin: '0 0 10px', fontSize: 12, color: 'var(--dim)' }}>
+      Want the full manual? Read the{' '}
+      <a href="https://github.com/MikheilSoziashvili/idle-game/blob/main/HANDBOOK.md" target="_blank" rel="noopener noreferrer">
+        Player's Handbook ↗
+      </a>{' '}
+      — the complete catalog with trade-offs, the realism mechanics, the scaling ladder, and a field manual of failure patterns.
+    </p>
     <div className="help-grid">
       <div>
         <h4>The loop</h4>
@@ -947,8 +954,8 @@ function HistoryPanel() {
         Timeline
       </h4>
       {history.length === 0 && <p style={{ color: 'var(--faint)', fontSize: 12 }}>Nothing yet — go make some history.</p>}
-      {history.map((h, i) => (
-        <div key={i} className="hist-row">
+      {history.map((h) => (
+        <div key={`${h.at}-${h.icon}-${h.label}`} className="hist-row">
           <span className="hist-icon">{h.icon}</span>
           <span className="hist-label">{h.label}</span>
           <span className="hist-when mono">{new Date(h.at).toLocaleDateString()} {new Date(h.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
