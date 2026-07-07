@@ -526,6 +526,23 @@
   .rf-packet-path.drop-path { animation: none; }
 }
 
+/* circuit breaker: an OPEN edge fails fast — amber, sparse dashes, badge */
+.rf-packet-path.breaker-open {
+  stroke: #b57700 !important;
+  animation: none;
+}
+.breaker-badge {
+  background: #fff7e8;
+  border: 1px solid rgba(181, 119, 0, 0.6);
+  border-radius: 6px;
+  padding: 1px 7px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #8a5a00;
+  letter-spacing: 0.05em;
+}
+
 /* what-if ghost card during palette drag */
 .drag-whatif {
   position: absolute;

@@ -192,6 +192,44 @@ export const BAL = {
   healthCheckMin: 0.5,
   sparkLen: 48, // per-node served-rps history samples (1 Hz)
 
+  // --- SLO & error budget --------------------------------------------------------
+  // The SRE mechanic: each funding round promises a success ratio; drops and
+  // shed burn a rolling error budget. Exhausted budget = release freeze.
+  sloWindowSec: 600, // rolling budget window
+  sloTargets: [0.99, 0.99, 0.995, 0.995, 0.999, 0.999, 0.9995, 0.9995], // per funding round
+  sloUnfreezeAt: 0.15, // budget must recover to this fraction to lift a freeze
+
+  // --- circuit breakers -------------------------------------------------------------
+  // Research 'breakers': callers stop forwarding to a distressed dependency and
+  // fail fast (cheap 429s) instead of feeding timeouts — kills retry storms.
+  brkTimeoutTrip: 1.0, // target timeout-rate (req/s EMA) that trips the breaker
+  brkUtilTrip: 1.05, // ...combined with target util above this
+  brkOpenSec: 6, // how long an open breaker refuses traffic
+  brkProbeSec: 3, // half-open probe window
+  brkProbeShare: 0.15, // share of traffic let through while probing
+  brkTimeoutDecay: 0.5, // per-second decay of the timeout EMA
+
+  // --- releases & deploy risk --------------------------------------------------------
+  // Shipping features grows demand permanently — but every deploy is a gamble.
+  // Most real outages are self-inflicted; canaries make them boring.
+  releaseCooldownSec: 75,
+  releaseDemandBonus: 0.015, // permanent demand growth per release…
+  releaseDemandCap: 0.3, // …capped
+  releaseCash: 35, // immediate launch-bump cash per release
+  releaseRisk: 0.22, // chance a release is a bad deploy
+  releaseRiskLowBudget: 0.44, // ...when shipping with error budget below the floor
+  releaseBudgetFloor: 0.35, // budget level under which shipping is reckless
+  canaryRollbackCost: 30, // $ a caught bad build costs with Progressive Delivery
+
+  // --- incident command ---------------------------------------------------------------
+  surgeCapMult: 1.4, // emergency capacity multiplier
+  surgeDurSec: 30,
+  surgeCostFactor: 25, // cost = max(surgeCostMin, costPerSec × this)
+  surgeCostMin: 40,
+  cmdShedDurSec: 20, // global load-shed window
+  cmdRepBonus: 1.5, // rep refund for commanding an incident visibly
+  crisisDropShare: 0.15, // drops/served ratio that flips the crisis banner
+
   // --- first-failure insurance -----------------------------------------------------
   insuranceWindowSec: 30,
 

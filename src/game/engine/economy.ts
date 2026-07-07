@@ -108,7 +108,10 @@ export function computeMods(st: GameStore): GlobalMods {
     upgradeDiscount: hasCicd ? BAL.cicdUpgradeDiscount : 1,
     smartSplitAll: mesh,
     latencyMult: 1,
-    demandMult: 1 + BAL.perkMomentumDemand * st.spSpentOn.momentum,
+    demandMult:
+      (1 + BAL.perkMomentumDemand * st.spSpentOn.momentum) *
+      // shipped features grow the audience — permanently, capped
+      (1 + Math.min(BAL.releaseDemandCap, st.featureLevel * BAL.releaseDemandBonus)),
     hasCicd,
     hasK8s,
     hasStripe,

@@ -64,6 +64,7 @@ interface SNode {
   wasBooting: boolean;
   lastHintAt: number;
   pendingHint: string | null; // set in pass A, applied when pass B builds the UI
+  timeoutEma: number; // req/s currently dying of timeout here (drives breakers)
   // realism layer (persists across ticks)
   warm01: number; // cache warm-up progress
   replLag: number; // replication lag seconds (replicas)
@@ -87,6 +88,8 @@ interface SEdge {
   nRates: number[];
   nLats: number[];
   rpsSm: number;
+  brk: 0 | 1 | 2; // circuit breaker: closed / OPEN / half-open
+  brkUntil: number; // simTime the current breaker state expires
 }
 
 const zeros = () => [0, 0, 0, 0, 0];
@@ -151,6 +154,18 @@ export class Engine {
   private uptime01 = 1;
   private p95Samples: { t: number; lat: number; w: number }[] = [];
   private p95 = 0;
+  private p99 = 0;
+
+  // SLO error budget: rolling 1 Hz window of completed/bad request rates
+  private sloWin: { done: number; bad: number }[] = [];
+  private sloTarget = 0.99;
+  private sloBudget01 = 1;
+  private sloBurn = 0;
+  private sloFrozen = false;
+  private crisis = false;
+  private crisisSince = -1;
+  private pendingRepBonus = 0;
+  private appliedBadDeployAt = -1;
 
   // milestone tracking
   private bottleneckArmed = false;
@@ -171,6 +186,10 @@ export class Engine {
   private sawRetryStorm = false;
   private sawShard = false;
   private sawSplit = false;
+  private sawBreaker = false;
+  private sawBudgetLow = false;
+  private sawCrisis = false;
+  private sawTailPain = false;
 
   // case-study runtime: which scripted events have been injected this run
   private caseInjected = new Set<string>();
@@ -276,6 +295,7 @@ export class Engine {
         wasBooting: false,
         lastHintAt: -999,
         pendingHint: null,
+        timeoutEma: 0,
         // loaded/adopted nodes are assumed warm; fresh placements reset to cold
         // when their boot completes (see pass A).
         warm01: 1,
@@ -307,6 +327,8 @@ export class Engine {
             nRates: zeros(),
             nLats: zeros(),
             rpsSm: 0,
+            brk: 0 as const,
+            brkUntil: 0,
           },
         ];
       }),
@@ -364,6 +386,15 @@ export class Engine {
       this.drillArmed = false;
       this.dropPath = [];
       this.pmWatch.clear();
+      this.p99 = 0;
+      this.sloWin = [];
+      this.sloBudget01 = 1;
+      this.sloBurn = 0;
+      this.sloFrozen = false;
+      this.crisis = false;
+      this.crisisSince = -1;
+      this.pendingRepBonus = 0;
+      this.appliedBadDeployAt = -1;
       this.adoptStats(st.stats);
       // node ids restart per run — never let a new run inherit old backlogs
       this.nodes = new Map();
@@ -394,6 +425,19 @@ export class Engine {
       const victim = this.nodes.get(fx.badDeployZone);
       if (victim) victim.health = Math.min(victim.health, BAL.badDeployHealth);
     }
+    // player-shipped bad deploy: damage the victim once, then let it fester
+    // until it heals, gets restarted — or gets rolled back from the incident bar
+    if (st.lastBadDeploy && st.lastBadDeploy.at !== this.appliedBadDeployAt) {
+      this.appliedBadDeployAt = st.lastBadDeploy.at;
+      const victim = this.nodes.get(st.lastBadDeploy.nodeId);
+      if (victim) {
+        victim.health = Math.min(victim.health, BAL.badDeployHealth);
+        this.log('err', `BAD DEPLOY: ${victim.name} degraded — roll back or ride it out`);
+      }
+    }
+    const surging = st.surgeUntil > this.simTime;
+    const cmdShed = st.shedUntil > this.simTime;
+    const hasBreakers = st.research.includes('breakers');
 
     const demand = computeDemand(st, fx.demandMult, mods);
     const byId = new Map(st.nodes.map((n) => [n.id, n]));
@@ -410,7 +454,7 @@ export class Engine {
         (region?.policies.aggressiveScale ? BAL.regionAggressiveCostMult : 1) *
         (region?.policies.cacheTtl ? 1.05 : 1);
       sn.cacheBonus = region?.policies.cacheTtl && (spec.hitRate?.read || spec.hitRate?.static) ? BAL.regionCacheTtlHitBonus : 0;
-      sn.shedMode = spec.special === 'apigw' || (region?.policies.rateLimit ?? false);
+      sn.shedMode = spec.special === 'apigw' || (region?.policies.rateLimit ?? false) || cmdShed;
 
       if (pn.kind === 'zone' && pn.zone) {
         sn.ready = readyInstances(pn.zone, this.simTime);
@@ -441,6 +485,8 @@ export class Engine {
 
       sn.offline = Boolean(pn.disabled) || fx.disabledNodes.has(sn.id);
       let cap = spec.capacity * levelCapMult(pn.level) * Math.max(0, sn.ready) * sn.health * mods.capacityMult;
+      // incident command: surge capacity is expensive, instant headroom
+      if (surging) cap *= BAL.surgeCapMult;
       // node mastery: veterans of a kind squeeze a little more out of the same box
       const mTier = masteryTier(this.stats.servedByKind[spec.kind] ?? 0);
       if (mTier > 0) cap *= 1 + BAL.masteryCapPerTier * mTier;
@@ -658,6 +704,8 @@ export class Engine {
         }
       }
       sn.inSm += (inRate - sn.inSm) * BAL.utilSmoothing;
+      // timeout pressure decays; the timeout branch below refills it
+      sn.timeoutEma *= Math.max(0, 1 - BAL.brkTimeoutDecay * dt);
 
       // API gateway / rate-limit regions shed overload at the door as 429s.
       if (sn.shedMode && sn.effCap > 0) {
@@ -708,6 +756,9 @@ export class Engine {
         }
         dropRate += droppedCount / dt;
         ui.drops += droppedCount / dt;
+        // overflow is distress too: callers' breakers should trip on a node
+        // that's drowning, not only on one that's timing out
+        sn.timeoutEma += (droppedCount / dt) * 0.5;
         this.hint(sn, 'Overloaded — shedding requests');
       }
       let totalBacklog = sn.backlog.reduce((a, b) => a + b, 0);
@@ -788,6 +839,7 @@ export class Engine {
         if (reqLat > CLASS_TIMEOUT_MS[c]) {
           dropRate += take / dt;
           ui.drops += take / dt;
+          sn.timeoutEma += take / dt; // breaker fuel: this box is eating timeouts
           // retry storm: timed-out users hit refresh — a share of the load
           // comes straight back. Shedding at the door (429s) never times out,
           // so gateways/rate-limits break the loop upstream.
@@ -834,9 +886,40 @@ export class Engine {
           if (port && liveOuts.length > 0) {
             const smart = spec.smartSplit || mods.smartSplitAll;
             const weights = this.splitWeights(liveOuts, smart);
+            // circuit breakers: a distressed dependency trips its callers open —
+            // that share fails fast as cheap shed instead of feeding timeouts.
+            // Jobs are exempt: queues already buffer, and patience is their point.
             for (let i = 0; i < liveOuts.length; i++) {
               const e = liveOuts[i];
-              const addRate = (rest * weights[i]) / dt;
+              let pass = 1;
+              if (hasBreakers && port !== 'jobs') {
+                const t = this.nodes.get(e.target)!;
+                if (e.brk === 1) {
+                  if (this.simTime >= e.brkUntil) {
+                    e.brk = 2;
+                    e.brkUntil = this.simTime + BAL.brkProbeSec;
+                  }
+                } else if (e.brk === 2) {
+                  if (this.simTime >= e.brkUntil) {
+                    if (t.timeoutEma > BAL.brkTimeoutTrip * 0.5) {
+                      e.brk = 1;
+                      e.brkUntil = this.simTime + BAL.brkOpenSec;
+                    } else {
+                      e.brk = 0;
+                      this.log('ok', `breaker closed: ${sn.name} → ${t.name} recovered`);
+                    }
+                  }
+                } else if (t.timeoutEma > BAL.brkTimeoutTrip && t.utilSm > BAL.brkUtilTrip) {
+                  e.brk = 1;
+                  e.brkUntil = this.simTime + BAL.brkOpenSec;
+                  this.sawBreaker = true;
+                  this.log('warn', `breaker OPEN: ${sn.name} → ${t.name} — failing fast while it recovers`);
+                }
+                pass = e.brk === 1 ? 0 : e.brk === 2 ? BAL.brkProbeShare : 1;
+              }
+              const share = rest * weights[i];
+              if (pass < 1) shedRate += (share * (1 - pass)) / dt; // fail fast = cheap 429s
+              const addRate = (share * pass) / dt;
               if (addRate <= 0) continue;
               const prev = e.nRates[c];
               e.nRates[c] += addRate;
@@ -971,11 +1054,11 @@ export class Engine {
       this.uptime01 += (ratio - this.uptime01) * ua;
     }
 
-    // p95 over a sliding window
+    // p95 + the tail (p99) over a sliding window
     const cutoff = this.simTime - BAL.p95WindowSec;
     if (this.p95Samples.length > 4000) this.p95Samples.splice(0, this.p95Samples.length - 4000);
     this.p95Samples = this.p95Samples.filter((s) => s.t >= cutoff);
-    this.p95 = weightedP95(this.p95Samples);
+    [this.p95, this.p99] = weightedPercentiles(this.p95Samples);
 
     // ---- first-failure insurance: the first bottleneck teaches, not scars ----
     if (
@@ -1002,7 +1085,28 @@ export class Engine {
     const repRate = repTarget > rep ? BAL.repHealRate : insured ? 0 : BAL.repBleedRate * bleedMult;
     rep += (repTarget - rep) * repRate * dt;
     if (this.events.hasActiveIncident() && !insured) rep -= BAL.repIncidentDrain * bleedMult * dt;
+    // commanding an incident visibly earns back a little trust (postmortem bonus)
+    if (this.pendingRepBonus !== 0) {
+      rep += this.pendingRepBonus;
+      this.pendingRepBonus = 0;
+    }
     rep = Math.max(BAL.repMin, Math.min(BAL.repMax, rep));
+
+    // ---- crisis flag: is this an Incident-Command moment? ----
+    const dropStorm = this.dropsEma > BAL.crisisDropShare * Math.max(1, this.servedEma) && this.servedEma > 2;
+    if (dropStorm) {
+      if (this.crisisSince < 0) this.crisisSince = this.simTime;
+    } else {
+      this.crisisSince = -1;
+    }
+    const badDeployLive =
+      st.lastBadDeploy !== null &&
+      this.simTime - st.lastBadDeploy.at < 90 &&
+      (this.nodes.get(st.lastBadDeploy.nodeId)?.health ?? 1) < 0.9;
+    this.crisis =
+      !st.sandbox &&
+      (this.events.hasActiveIncident() || badDeployLive || (this.crisisSince >= 0 && this.simTime - this.crisisSince > 3));
+    if (this.crisis) this.sawCrisis = true;
 
     // ---- company growth (logistic toward the round's scale cap) ----
     const round = roundIndex(st.spTotal);
@@ -1063,6 +1167,7 @@ export class Engine {
       } else {
         this.evaluateCase(st, cash);
       }
+      this.evalSlo(st);
       this.checkLessons(st, lifetimeRev);
       this.trackPostmortems(st, rep);
       this.checkMastery(st);
@@ -1087,7 +1192,7 @@ export class Engine {
     const edgeStats: Record<string, EdgeLive> = {};
     for (const e of this.edges.values()) {
       const t = this.nodes.get(e.target);
-      edgeStats[e.id] = { rps: e.rpsSm, util: Math.min(1.5, Math.max(t?.utilSm ?? 0, 0)), classRates: e.rates.slice() };
+      edgeStats[e.id] = { rps: e.rpsSm, util: Math.min(1.5, Math.max(t?.utilSm ?? 0, 0)), classRates: e.rates.slice(), breaker: e.brk };
     }
     const live: LiveState = {
       gauges: {
@@ -1096,6 +1201,7 @@ export class Engine {
         dropped: this.dropsEma,
         shed: this.shedEma,
         p95: this.p95,
+        p99: this.p99,
         revenuePerSec: this.revEma,
         costPerSec: this.costEma,
         profitPerSec: profitNow,
@@ -1107,6 +1213,14 @@ export class Engine {
       events: this.events.snapshot(),
       demandMult: fx.demandMult,
       dropPathEdges: this.dropPath,
+      slo: {
+        target: this.sloTarget,
+        budget01: this.sloBudget01,
+        burn: this.sloBurn,
+        frozen: this.sloFrozen,
+        windowSec: BAL.sloWindowSec,
+      },
+      crisis: this.crisis,
     };
     const statsCopy = { ...this.stats };
     this.lastPushedStats = statsCopy;
@@ -1136,12 +1250,52 @@ export class Engine {
       dropped: this.dropsEma,
       shed: this.shedEma,
       p95: this.p95 > 0 ? this.p95 : 9999,
+      p99: this.p99 > 0 ? this.p99 : 9999,
       revenuePerSec: this.revEma,
       costPerSec: this.costEma,
       profitPerSec: this.revEma - this.costEma,
       uptime: this.uptime01 * 100,
       rpPerSec: 0,
     };
+  }
+
+  /**
+   * SLO error budget (1 Hz): the funding round promises a success ratio; the
+   * gap to 100% is budget you may burn. Empty budget = release freeze.
+   */
+  private evalSlo(st: GameStore) {
+    const round = roundIndex(st.spTotal);
+    this.sloTarget = BAL.sloTargets[Math.min(round, BAL.sloTargets.length - 1)];
+    const bad = this.dropsEma + this.shedEma * BAL.repShedScale;
+    const done = this.servedEma + bad;
+    this.sloWin.push({ done, bad });
+    if (this.sloWin.length > BAL.sloWindowSec) this.sloWin.shift();
+
+    let doneSum = 0;
+    let badSum = 0;
+    for (const s of this.sloWin) {
+      doneSum += s.done;
+      badSum += s.bad;
+    }
+    const allowed = doneSum * (1 - this.sloTarget);
+    this.sloBudget01 = allowed > 1e-6 ? Math.max(0, Math.min(1, 1 - badSum / allowed)) : 1;
+
+    // burn rate over the last 10s: 1.0 = spending exactly the sustainable pace
+    const recent = this.sloWin.slice(-10);
+    const rDone = recent.reduce((a, s) => a + s.done, 0);
+    const rBad = recent.reduce((a, s) => a + s.bad, 0);
+    this.sloBurn = rDone > 1e-6 ? rBad / rDone / (1 - this.sloTarget) : 0;
+
+    if (this.sloBudget01 < 0.5 && done > 1) this.sawBudgetLow = true;
+    if (!this.sloFrozen && this.sloBudget01 <= 0.005 && doneSum > 10) {
+      this.sloFrozen = true;
+      this.log('err', `error budget EXHAUSTED (SLO ${(this.sloTarget * 100).toFixed(2)}%) — release freeze`);
+      st.addToast('warn', 'Error budget exhausted', 'Releases are frozen until reliability recovers. That is the deal.');
+    } else if (this.sloFrozen && this.sloBudget01 > BAL.sloUnfreezeAt) {
+      this.sloFrozen = false;
+      this.log('ok', 'error budget recovering — release freeze lifted');
+      st.addToast('ok', 'Release freeze lifted', `Budget back above ${Math.round(BAL.sloUnfreezeAt * 100)}%. Ship carefully.`);
+    }
   }
 
   /** SLA contracts: roll the board on schedule; hold-evaluate the active one. */
@@ -1242,6 +1396,9 @@ export class Engine {
         });
       }
     }
+    // did the player take command during any live incident?
+    const commanding = st.surgeUntil > this.simTime || st.shedUntil > this.simTime;
+    if (commanding) for (const w of this.pmWatch.values()) (w as { used?: boolean }).used = true;
     const liveIds = new Set(liveIncidents.map((e) => e.id));
     for (const [id, w] of this.pmWatch) {
       if (liveIds.has(id)) continue;
@@ -1250,6 +1407,11 @@ export class Engine {
       const repLost = Math.max(0, w.rep0 - rep);
       const mitigations: string[] = [];
       const gaps: string[] = [];
+      if ((w as { used?: boolean }).used) {
+        mitigations.push('incident command bought headroom (surge/shed)');
+        this.pendingRepBonus += BAL.cmdRepBonus;
+        st.grantAchievement('commander');
+      }
       const hasRedundancy = st.regions.some((r) => r.policies.redundancy);
       const hasK8s = st.nodes.some((n) => n.kind === 'k8s' && !n.disabled);
       const shedding = this.shedEma > 0.2 || st.regions.some((r) => r.policies.rateLimit) || st.nodes.some((n) => n.kind === 'apigw' && !n.disabled);
@@ -1548,6 +1710,12 @@ export class Engine {
     L('retry-storm', this.sawRetryStorm);
     L('microservices', this.sawSplit);
     L('sharding', this.sawShard);
+    // reliability loop — each fires the first time the system becomes real
+    L('circuit-breaker', this.sawBreaker);
+    L('error-budget', this.sawBudgetLow);
+    L('incident-command', this.sawCrisis);
+    if (this.p95 > 0 && this.p99 > 3 * this.p95 && this.servedEma > 5) this.sawTailPain = true;
+    L('tail-latency', this.sawTailPain);
   }
 
   private checkAchievements(st: GameStore, byId: Map<string, GameStore['nodes'][number]>, profitNow: number) {
@@ -1567,6 +1735,7 @@ export class Engine {
         }
       }
     }
+    if (this.sawBreaker) grant('breaker-breaker');
     const kinds = new Set(st.nodes.filter((n) => !n.disabled).map((n) => n.kind));
     if (kinds.has('k8s') && kinds.has('cicd') && kinds.has('stripe') && kinds.has('autoscaler')) grant('self-driving');
     if (this.stats.fourNinesStreak >= 300) grant('four-nines');
@@ -1636,17 +1805,21 @@ function misconfigHint(kind: string, cls: string): string {
   return `${cls} traffic has nowhere to go`;
 }
 
-function weightedP95(samples: { lat: number; w: number }[]): number {
-  if (samples.length === 0) return 0;
+/** Weighted p95 and p99 from one sort — the tail is where the pain lives. */
+function weightedPercentiles(samples: { lat: number; w: number }[]): [number, number] {
+  if (samples.length === 0) return [0, 0];
   const sorted = [...samples].sort((a, b) => a.lat - b.lat);
   const total = sorted.reduce((a, s) => a + s.w, 0);
-  if (total <= 0) return 0;
+  if (total <= 0) return [0, 0];
+  let p95 = -1;
   let acc = 0;
   for (const s of sorted) {
     acc += s.w;
-    if (acc >= total * 0.95) return s.lat;
+    if (p95 < 0 && acc >= total * 0.95) p95 = s.lat;
+    if (acc >= total * 0.99) return [p95 < 0 ? s.lat : p95, s.lat];
   }
-  return sorted[sorted.length - 1].lat;
+  const last = sorted[sorted.length - 1].lat;
+  return [p95 < 0 ? last : p95, last];
 }
 
 // ------------------------------- bootstrap ---------------------------------

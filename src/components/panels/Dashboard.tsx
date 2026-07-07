@@ -17,8 +17,8 @@ function whyText(key: string, g: ReturnType<typeof useGame.getState>['live']['ga
       ];
     case 'p95':
       return [
-        '95% of user-facing requests finish faster than this (async jobs excluded).',
-        `Each hop adds base latency × congestion (1 + 2·util³) + queue wait.`,
+        `95% of user-facing requests finish faster than this; the tail (p99: ${fmtNum(g.p99)}ms) is what your heaviest users feel.`,
+        `Each hop adds base latency × congestion (1 + 2·util³) + queue wait. When p99 detaches from p95, look for a queue.`,
         `Revenue decays past ${BAL.latValueKneeMs}ms and bottoms out at ${Math.round(BAL.latValueFloor * 100)}% by ${BAL.latValueZeroMs}ms.`,
       ];
     case 'profit':
@@ -31,7 +31,7 @@ function whyText(key: string, g: ReturnType<typeof useGame.getState>['live']['ga
       return [
         'Success ratio of completed requests (shed 429s count 15% as bad).',
         `Reputation (${Math.round(rep)}) chases a target set by uptime: 90% → 0 rep, 99.9%+ → 100.`,
-        `Rep bleeds ~4× faster than it heals — and growth rate follows reputation.`,
+        `The green strip below is your ERROR BUDGET: your SLO allows a fixed share of failures per ${Math.round(BAL.sloWindowSec / 60)} min. Spend it on risky deploys — run it dry and releases freeze.`,
       ];
     case 'rp':
       return [
@@ -72,6 +72,11 @@ export default function Dashboard() {
   const drill = useGame((s) => s.drill);
   const startDrill = useGame((s) => s.startDrill);
   const simTime = useGame((s) => s.simTime);
+  const slo = useGame((s) => s.live.slo);
+  const featureLevel = useGame((s) => s.featureLevel);
+  const releaseReadyAt = useGame((s) => s.releaseReadyAt);
+  const shipRelease = useGame((s) => s.shipRelease);
+  const hasCanary = useGame((s) => s.research.includes('canary'));
 
   const round = roundIndex(spTotal);
   const pending = pendingSp(lifetimeRev);
@@ -84,6 +89,8 @@ export default function Dashboard() {
   const drillRunning = drill.activeUntil > simTime;
   const drillAvailable = !sandbox && !caseId && !drillRunning && drill.lastDay !== today;
   const tutGauges = useGame((s) => s.tutorialStep === 3);
+  const shipCooldown = Math.max(0, releaseReadyAt - simTime);
+  const shipReady = !sandbox && !caseId && shipCooldown <= 0 && !slo.frozen;
 
   const gaugeWhy = (key: string) => (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -166,7 +173,7 @@ export default function Dashboard() {
           <Why k="p95" />
           <div className="gauge-label">
             <span>p95 latency</span>
-            <span>slo {BAL.slaTargetMs}ms</span>
+            <span className={g.p99 > 3 * Math.max(1, g.p95) && g.served > 5 ? 'tail-hot' : ''}>p99 {fmtNum(g.p99)}</span>
           </div>
           <div className="gauge-value">
             {fmtNum(g.p95)} <small>ms</small>
@@ -216,7 +223,7 @@ export default function Dashboard() {
           <Why k="uptime" />
           <div className="gauge-label">
             <span>uptime</span>
-            <span>SLA 99.9</span>
+            <span>SLO {(slo.target * 100).toFixed(slo.target >= 0.999 ? 2 : 1)}</span>
           </div>
           <div className="gauge-value">
             {g.uptime.toFixed(2)}
@@ -227,6 +234,17 @@ export default function Dashboard() {
               style={{
                 width: `${Math.min(100, Math.max(0, (g.uptime - 98) / 0.02))}%`,
                 background: rampColor(Math.min(1, Math.max(0, (99.95 - g.uptime) / 1))),
+              }}
+            />
+          </div>
+          <div
+            className={`gauge-bar budget-bar ${slo.frozen ? 'frozen' : ''}`}
+            title={`error budget: ${Math.round(slo.budget01 * 100)}% left${slo.frozen ? ' — RELEASE FREEZE' : slo.burn > 1.5 ? ` · burning ${slo.burn.toFixed(1)}× sustainable` : ''}`}
+          >
+            <i
+              style={{
+                width: `${Math.round(slo.budget01 * 100)}%`,
+                background: slo.frozen ? 'var(--bad)' : slo.budget01 < 0.35 ? 'var(--amber, #b57700)' : 'var(--ok)',
               }}
             />
           </div>
@@ -310,6 +328,22 @@ export default function Dashboard() {
             }
           >
             🔥{drill.streak > 0 ? drill.streak : ''}
+          </button>
+        )}
+        {!sandbox && !caseId && (
+          <button
+            onClick={shipRelease}
+            disabled={!shipReady}
+            className={shipReady ? 'primary' : ''}
+            title={
+              slo.frozen
+                ? 'RELEASE FREEZE — the error budget is spent. Restore reliability first.'
+                : shipCooldown > 0
+                  ? `Next release ready in ${Math.ceil(shipCooldown)}s`
+                  : `Ship v1.${featureLevel + 1}: +$${BAL.releaseCash} + permanent demand growth. ${Math.round((slo.budget01 < BAL.releaseBudgetFloor ? BAL.releaseRiskLowBudget : BAL.releaseRisk) * 100)}% bad-deploy risk${hasCanary ? ' — canary catches it' : ' (research Progressive Delivery for canaries)'}${slo.budget01 < BAL.releaseBudgetFloor ? ' · RECKLESS: budget is thin' : ''}`
+            }
+          >
+            🚀{featureLevel > 0 ? `v1.${featureLevel}` : ' Ship'}
           </button>
         )}
         <button

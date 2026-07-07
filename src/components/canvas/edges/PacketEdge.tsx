@@ -42,13 +42,14 @@ export default function PacketEdge(props: EdgeProps) {
 
   const rps = live?.rps ?? 0;
   const util = live?.util ?? 0;
+  const breaker = live?.breaker ?? 0;
   const active = rps > 0.05;
-  const color = active ? rampColor(Math.min(1, util)) : IDLE;
+  const color = breaker === 1 ? 'var(--amber, #b57700)' : active ? rampColor(Math.min(1, util)) : IDLE;
   const width = active ? 1.6 + Math.min(2.8, rps / 35) : 1.2;
 
   // Packet dots: SMIL motion along the edge path. Count scales with volume,
   // speed with sim speed. Disabled under prefers-reduced-motion.
-  const dots = !reduced && active && speed > 0 ? 1 + Math.min(3, Math.floor(rps / 12)) : 0;
+  const dots = !reduced && active && speed > 0 && breaker !== 1 ? 1 + Math.min(3, Math.floor(rps / 12)) : 0;
   const dur = Math.max(0.5, 2.4 - Math.min(1, util) * 1.1) / (speed === 0 ? 1 : Math.min(2, speed));
 
   return (
@@ -56,14 +57,25 @@ export default function PacketEdge(props: EdgeProps) {
       <BaseEdge
         id={id}
         path={path}
-        className={`rf-packet-path ${onDropPath ? 'drop-path' : ''}`}
+        className={`rf-packet-path ${onDropPath ? 'drop-path' : ''} ${breaker === 1 ? 'breaker-open' : ''}`}
         style={{
           stroke: color,
           strokeWidth: onDropPath ? Math.max(width, 2.2) : width,
-          opacity: active ? 0.95 : 0.55,
-          strokeDasharray: reduced && active ? '7 5' : undefined,
+          opacity: breaker === 1 ? 0.85 : active ? 0.95 : 0.55,
+          strokeDasharray: breaker === 1 ? '3 7' : breaker === 2 ? '10 4' : reduced && active ? '7 5' : undefined,
         }}
       />
+      {breaker === 1 && (
+        <EdgeLabelRenderer>
+          <div
+            className="breaker-badge"
+            style={{ position: 'absolute', transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`, pointerEvents: 'none', zIndex: 11 }}
+            title="Circuit breaker OPEN — failing fast while the dependency recovers"
+          >
+            ⌁ open
+          </div>
+        </EdgeLabelRenderer>
+      )}
       {Array.from({ length: dots }, (_, i) => (
         <circle key={i} r={2.3} fill={color} style={{ filter: `drop-shadow(0 0 3px ${color})` }}>
           <animateMotion dur={`${dur}s`} repeatCount="indefinite" begin={`${(i * dur) / dots}s`} path={path} />

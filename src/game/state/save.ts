@@ -49,6 +49,8 @@ const SAVED_FIELDS = [
   'rival',
   'runConstraint',
   'insuranceUsed',
+  'featureLevel',
+  'releaseReadyAt',
 ] as const;
 
 interface SaveBlob {

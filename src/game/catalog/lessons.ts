@@ -162,6 +162,41 @@ export const LESSONS: LessonDef[] = [
     body:
       "You've hit the wall every planet-scale system hits: caches absorb reads, replicas spread reads, but WRITES still funnel into one primary. Sharding is the answer of last resort: partition the data by key (user id, region, tenant) so each shard owns a slice and takes only its share of writes. Now capacity scales with shard count — and so does operational pain: cross-shard queries, rebalancing hot shards, resharding as you grow. YouTube ran on sharded MySQL via Vitess; so does Slack.",
   },
+  {
+    id: 'tail-latency',
+    title: 'The tail wags the business',
+    tag: 'p99',
+    body:
+      "Your p95 looks fine — but p99 is several times worse, and that 1-in-100 request isn't random: heavy users with the most data hit the slow paths most often, so your worst latency lands on your best customers. Real SLOs are set on the tail (p99, even p99.9) because averages hide exactly the pain that churns accounts. When the tail detaches from the median, look for queues: one slow request at the front of a line delays everyone behind it.",
+  },
+  {
+    id: 'circuit-breaker',
+    title: 'Fail fast, recover faster',
+    tag: 'circuit breaking',
+    body:
+      'A breaker just tripped: a dependency was timing out, so its callers stopped sending and failed fast with cheap 429s instead. Counter-intuitive but vital — hammering a drowning service keeps it drowning (every timeout breeds retries), while backing off gives it room to surface. The breaker probes with a trickle of traffic (half-open) and closes once the dependency answers again. Netflix built Hystrix around exactly this pattern after cascade failures took down the whole product.',
+  },
+  {
+    id: 'error-budget',
+    title: 'Reliability is a budget, not a virtue',
+    tag: 'SLO / error budget',
+    body:
+      "Your SLO promises a success ratio; the gap between that promise and 100% is your ERROR BUDGET — failure you're allowed to spend. Spend it on risky deploys, bold migrations, load experiments. But when the budget runs dry, releases freeze until reliability recovers: that's the deal between velocity and stability, made explicit. This is how Google SRE ended the eternal dev-vs-ops war — nobody argues about 'being careful'; they argue about a number.",
+  },
+  {
+    id: 'release-train',
+    title: 'You are the outage',
+    tag: 'change risk',
+    body:
+      "Most production incidents aren't hardware or traffic — they're CHANGES: a deploy, a config flip, a migration. Every ship is a gamble against your error budget. The fix isn't shipping less (features are why the company exists); it's making shipping safe: canary rollouts that expose a bad build to a slice of traffic, automatic rollback, and freezing only when the budget says so. Elite teams deploy MORE often than laggards — smaller changes, safer rails, faster recovery.",
+  },
+  {
+    id: 'incident-command',
+    title: 'Someone has to drive',
+    tag: 'incident response',
+    body:
+      "An incident is running and you have a toolkit: surge capacity (expensive, instant headroom), emergency load-shedding (fail cheap while you think), rollback (when the change was the cause). Real incident command works the same way — one person drives, actions are deliberate, and the goal is MITIGATE FIRST, diagnose later. Restore service, then find root cause in the postmortem. The worst incidents aren't the biggest failures; they're the small ones nobody took command of.",
+  },
 ];
 
 export const lessonById = new Map(LESSONS.map((l) => [l.id, l]));

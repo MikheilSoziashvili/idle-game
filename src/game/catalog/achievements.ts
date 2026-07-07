@@ -21,6 +21,10 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   { id: 'cache-hierarchy', name: 'Cache Hierarchy', desc: 'Redis and Memcached both serving hits at once.', icon: '⧉' },
   { id: 'chaos-native', name: 'Chaos Native', desc: '3+ Spot instances under Kubernetes at 99%+ uptime.', icon: '☈' },
   { id: 'polyglot', name: 'Polyglot Persistence', desc: 'Three different database engines serving at once.', icon: '⛁' },
+  // --- reliability loop ---
+  { id: 'move-fast', name: 'Move Fast, Fix Things', desc: 'Ship 10 releases in a single run.', icon: '🚀' },
+  { id: 'commander', name: 'Incident Commander', desc: 'Resolve an incident after taking a command action.', icon: '☎' },
+  { id: 'breaker-breaker', name: 'Breaker, Breaker', desc: 'A circuit breaker trips open — and the system holds.', icon: '⌁' },
   // --- live-ops ---
   { id: 'dealmaker', name: 'Dealmaker', desc: 'Complete 10 SLA contracts.', icon: '✍' },
   { id: 'fire-drill', name: 'Fire Marshal', desc: 'A 7-day chaos-drill streak.', icon: '🔥' },

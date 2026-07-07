@@ -68,6 +68,13 @@ export const MILESTONES: MilestoneDef[] = [
     rewardCash: 150,
   },
   {
+    id: 'ship-it',
+    title: 'Ship it',
+    desc: 'Ship your first feature release from the dashboard.',
+    hint: 'The 🚀 button ships a release: permanent demand growth — and a real chance of a bad deploy. Canaries make it safe.',
+    rewardCash: 150,
+  },
+  {
     id: 'series-ready',
     title: 'Series ready',
     desc: 'Bank enough traction for a funding round (2 Scale Points pending).',

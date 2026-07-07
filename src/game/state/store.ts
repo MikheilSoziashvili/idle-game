@@ -27,6 +27,7 @@ import type {
   RegionRect,
   RivalState,
   RunConstraint,
+  SloLive,
   Tool,
   ZoneState,
 } from '../engine/types';
@@ -79,6 +80,8 @@ export interface LiveState {
   events: ActiveEvent[];
   demandMult: number;
   dropPathEdges: string[]; // edges upstream of a dropping node (bottleneck breadcrumbs)
+  slo: SloLive; // error budget — the reliability currency
+  crisis: boolean; // active incident / drop storm → Incident Command bar
 }
 
 export interface GameStats {
@@ -103,6 +106,7 @@ const emptyGauges = (): Gauges => ({
   dropped: 0,
   shed: 0,
   p95: 0,
+  p99: 0,
   revenuePerSec: 0,
   costPerSec: 0,
   profitPerSec: 0,
@@ -117,6 +121,8 @@ const emptyLive = (): LiveState => ({
   events: [],
   demandMult: 1,
   dropPathEdges: [],
+  slo: { target: 0.99, budget01: 1, burn: 0, frozen: false, windowSec: BAL.sloWindowSec },
+  crisis: false,
 });
 
 export const emptyStats = (): GameStats => ({
@@ -204,6 +210,13 @@ export interface GameStore {
   runConstraint: RunConstraint;
   insuranceUsed: boolean; // first-bottleneck rep protection consumed
 
+  // --- reliability loop: releases & incident command ---
+  featureLevel: number; // releases shipped this run — permanent demand bonus
+  releaseReadyAt: number; // simTime the Ship button re-arms
+  surgeUntil: number; // emergency capacity window (runtime, not saved)
+  shedUntil: number; // emergency load-shed window (runtime, not saved)
+  lastBadDeploy: { nodeId: string; at: number } | null; // rollback target (runtime)
+
   // --- live (engine-written) ---
   live: LiveState;
   logs: LogEntry[];
@@ -284,6 +297,12 @@ export interface GameStore {
   addCustomCase: (def: CaseDef) => boolean;
   removeCustomCase: (id: string) => void;
   setDragKind: (k: Exclude<NodeKind, 'zone'> | null) => void;
+
+  // --- actions: reliability loop ---
+  shipRelease: () => void;
+  commandSurge: () => void;
+  commandShed: () => void;
+  commandRollback: () => void;
 
   // --- actions: ui ---
   setTool: (t: Tool) => void;
@@ -384,6 +403,12 @@ function freshRunState() {
     postmortemQueue: [] as Postmortem[],
     rival: rollRival(),
     dragKind: null as Exclude<NodeKind, 'zone'> | null,
+    // reliability loop resets with the platform
+    featureLevel: 0,
+    releaseReadyAt: 0,
+    surgeUntil: 0,
+    shedUntil: 0,
+    lastBadDeploy: null as { nodeId: string; at: number } | null,
   };
 }
 
@@ -1209,6 +1234,91 @@ export const useGame = create<GameStore>()((set, get) => ({
 
   setDragKind: (k) => set({ dragKind: k }),
 
+  // --------------------------------------------------------- reliability loop --
+  shipRelease: () => {
+    const s = get();
+    if (s.sandbox || s.caseId) return;
+    if (s.simTime < s.releaseReadyAt) return;
+    if (s.live.slo.frozen) {
+      s.addToast('warn', 'Release freeze', 'The error budget is spent. Restore reliability first — that is the deal.');
+      return;
+    }
+    const lowBudget = s.live.slo.budget01 < BAL.releaseBudgetFloor;
+    const risk = lowBudget ? BAL.releaseRiskLowBudget : BAL.releaseRisk;
+    const bad = Math.random() < risk;
+    const hasCanary = s.research.includes('canary');
+    const v = s.featureLevel + 1;
+
+    if (bad && hasCanary) {
+      // the canary catches it: no damage, small rollback fee, no feature shipped
+      set({ releaseReadyAt: s.simTime + BAL.releaseCooldownSec, cash: s.cash - BAL.canaryRollbackCost });
+      s.addToast('ok', `Canary caught a bad build (v1.${v})`, `Rolled back at 5% traffic. −$${BAL.canaryRollbackCost}, nobody noticed.`);
+      s.pushHistory('◐', `Canary blocked a bad deploy (v1.${v})`);
+      return;
+    }
+
+    // the feature ships either way — a bad deploy hurts a random serving node
+    set({
+      featureLevel: v,
+      releaseReadyAt: s.simTime + BAL.releaseCooldownSec,
+      cash: s.cash + BAL.releaseCash,
+    });
+    s.completeMilestone('ship-it');
+    s.showLesson('release-train');
+    if (s.featureLevel + 1 >= 10) s.grantAchievement('move-fast');
+    if (bad) {
+      const victims = s.nodes.filter((n) => {
+        const spec = specOf(n.kind, n.zone?.template);
+        return spec.capacity > 0 && !n.disabled && n.kind !== 'users';
+      });
+      if (victims.length > 0) {
+        const victim = victims[Math.floor(Math.random() * victims.length)];
+        set({ lastBadDeploy: { nodeId: victim.id, at: s.simTime } });
+        // engine picks the health damage up via lastBadDeploy (next tick)
+        s.addToast('warn', `v1.${v} is a bad deploy`, `${victim.label ?? specOf(victim.kind, victim.zone?.template).name} is degrading. Roll back from the incident bar — or ride it out.`);
+        s.pushHistory('💥', `Bad deploy: v1.${v}`);
+      }
+    } else {
+      s.addToast('ok', `Shipped v1.${v}`, `+$${BAL.releaseCash} launch bump · permanent demand +${(BAL.releaseDemandBonus * 100).toFixed(1)}%${lowBudget ? ' · shipped on a thin budget — risky' : ''}`);
+    }
+  },
+
+  commandSurge: () => {
+    const s = get();
+    if (s.surgeUntil > s.simTime) return;
+    const cost = Math.max(BAL.surgeCostMin, Math.round(s.live.gauges.costPerSec * BAL.surgeCostFactor));
+    if (!s.sandbox && s.cash < cost) {
+      s.addToast('warn', 'Cannot afford surge capacity', `Emergency capacity costs $${cost} right now.`);
+      return;
+    }
+    set({ cash: s.sandbox ? s.cash : s.cash - cost, surgeUntil: s.simTime + BAL.surgeDurSec });
+    s.addToast('event', 'Surge capacity online', `+${Math.round((BAL.surgeCapMult - 1) * 100)}% capacity everywhere for ${BAL.surgeDurSec}s. −$${cost}.`);
+    s.showLesson('incident-command');
+  },
+
+  commandShed: () => {
+    const s = get();
+    if (s.shedUntil > s.simTime) return;
+    set({ shedUntil: s.simTime + BAL.cmdShedDurSec });
+    s.addToast('event', 'Emergency load-shedding', `Every node fails cheap (429s) instead of timing out for ${BAL.cmdShedDurSec}s.`);
+    s.showLesson('incident-command');
+  },
+
+  commandRollback: () => {
+    const s = get();
+    const bd = s.lastBadDeploy;
+    if (!bd || s.simTime - bd.at > 90) return;
+    set({
+      lastBadDeploy: null,
+      featureLevel: Math.max(0, s.featureLevel - 1),
+      nodes: s.nodes.map((n) => (n.id === bd.nodeId ? { ...n, bootUntil: s.simTime + 2 } : n)),
+      graphVersion: s.graphVersion + 1,
+    });
+    s.addToast('ok', 'Rolled back', 'The bad build is gone (so is its feature). The node restarts healthy in 2s.');
+    s.pushHistory('↩', 'Rolled back a bad deploy');
+    s.showLesson('incident-command');
+  },
+
   // -------------------------------------------------------------------- ui --
   setTool: (t) => set({ tool: t, pendingBlueprint: t === 'stamp' ? get().pendingBlueprint : null }),
   setOverlay: (o) => set({ overlay: o }),
@@ -1235,7 +1345,16 @@ export const useGame = create<GameStore>()((set, get) => ({
   setSandboxDemand: (v) => set({ sandboxDemand: v }),
   setSettings: (patch) => set((s) => ({ settings: { ...s.settings, ...patch } })),
 
-  loadState: (partial) => set({ ...partial, graphVersion: get().graphVersion + 1, runEpoch: get().runEpoch + 1 }),
+  loadState: (partial) =>
+    set({
+      ...partial,
+      // runtime windows are meaningless against a different timeline
+      surgeUntil: 0,
+      shedUntil: 0,
+      lastBadDeploy: null,
+      graphVersion: get().graphVersion + 1,
+      runEpoch: get().runEpoch + 1,
+    }),
 
   newGame: (sandbox, constraint = 'none') => {
     const s = get();
@@ -1251,7 +1370,7 @@ export const useGame = create<GameStore>()((set, get) => ({
       customCases: s.customCases,
       cash: sandbox ? 1e12 : BAL.startCash,
       sandbox,
-      research: sandbox ? ['containers', 'caching', 'gateway', 'autoscaling', 'queues', 'replicas', 'cdn', 'nosql', 'managed', 'orchestration', 'obs2', 'serverless', 'mesh', 'multiregion', 'mlpipe'] : [],
+      research: sandbox ? ['containers', 'caching', 'gateway', 'autoscaling', 'queues', 'replicas', 'pooling', 'sharding', 'domains', 'breakers', 'canary', 'cdn', 'nosql', 'managed', 'orchestration', 'obs2', 'serverless', 'mesh', 'multiregion', 'mlpipe'] : [],
       tiers: sandbox ? [1, 2, 3, 4, 5, 6] : [1],
       stats: emptyStats(),
       drill: { streak: 0, lastDay: '', activeUntil: 0 },

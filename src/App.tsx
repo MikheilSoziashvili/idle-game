@@ -14,6 +14,7 @@ import Modals from './components/hud/Modals';
 import LessonCard from './components/hud/LessonCard';
 import PostmortemCard from './components/hud/PostmortemCard';
 import TutorialCard from './components/hud/TutorialCard';
+import IncidentBar from './components/hud/IncidentBar';
 import CaseHud from './components/hud/CaseHud';
 import { unlockedTools, useGame } from './game/state/store';
 import { tryLoad, saveNow, offlineStory } from './game/state/save';
@@ -144,6 +145,7 @@ export default function App() {
         <LessonCard />
         <PostmortemCard />
         <TutorialCard />
+        <IncidentBar />
         <Toasts />
         <Modals />
       </main>

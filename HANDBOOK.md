@@ -217,6 +217,16 @@ Caches absorb reads. Replicas spread reads. Pooling absorbs connections. **Write
 - **The rival**: a competitor ticker grows toward 90% of the round's cap. Raise while out-serving them: +2 SP.
 - **Mastery**: every technology levels up with lifetime requests served (1k / 100k / 10M → bronze / silver / gold), each tier +2% capacity for that kind, forever.
 
+### The reliability loop (SLOs, releases, incident command)
+
+The SRE mechanic, made playable:
+
+- **SLO & error budget**: each funding round promises a success ratio (99% pre-seed → 99.95% at IPO). The gap to 100% is your **error budget** over a rolling 10-minute window — the green strip under the uptime gauge. Drops burn it fast; shed 429s burn it at 15%. Run it dry and **releases freeze** until it recovers past 15%.
+- **Ship releases (🚀)**: every ~75 s you can ship a feature — +$35 launch bump and permanent demand growth (+1.5% each, capped +30%). But every deploy is a gamble: **22% chance of a bad deploy** (44% if you ship with a thin budget) that degrades a random node. **Progressive Delivery** research adds canaries: bad builds are caught at 5% traffic and rolled back for a small fee. Velocity vs reliability, the actual trade.
+- **p99 tail latency**: the p95 gauge now shows the tail. When p99 detaches from p95 (3×+), a queue is holding your heaviest users hostage — and they're your biggest accounts.
+- **Circuit Breakers** (research): callers stop forwarding to a drowning dependency and fail fast as cheap 429s — the edge turns amber with a `⌁ open` badge, probes half-open, closes when the target recovers. Kills retry storms at the source.
+- **Incident Command**: when something is actively burning, a red command bar appears with real mitigations — **Surge** (+40% capacity for 30 s, costs real money), **Shed load** (20 s of global fail-cheap), **Roll back** (when the deploy was the cause — you lose the feature, the node comes back healthy). Commanding an incident visibly earns rep back in the postmortem. Mitigate first, diagnose later.
+
 ---
 
 ## 10. Products & funding rounds

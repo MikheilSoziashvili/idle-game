@@ -214,6 +214,7 @@ export interface EdgeLive {
   rps: number;
   util: number; // saturation of the downstream target
   classRates: number[]; // per-class rps on this wire [static, api, read, write, job]
+  breaker: 0 | 1 | 2; // circuit breaker: 0 closed, 1 OPEN (failing fast), 2 half-open (probing)
 }
 
 export interface Gauges {
@@ -222,11 +223,21 @@ export interface Gauges {
   dropped: number;
   shed: number;
   p95: number;
+  p99: number; // the tail: where your angriest (biggest) users live
   revenuePerSec: number;
   costPerSec: number;
   profitPerSec: number;
   uptime: number; // 0..100
   rpPerSec: number;
+}
+
+/** Service-level objective state: the error budget is THE reliability currency. */
+export interface SloLive {
+  target: number; // e.g. 0.999 — success ratio promised this funding round
+  budget01: number; // remaining error budget over the rolling window, 0..1
+  burn: number; // current burn rate (1 = burning exactly the sustainable rate)
+  frozen: boolean; // budget exhausted → release freeze
+  windowSec: number;
 }
 
 export type LogSev = 'info' | 'ok' | 'warn' | 'err' | 'deploy' | 'scale';
