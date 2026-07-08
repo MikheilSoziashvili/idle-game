@@ -1,4 +1,4 @@
-import { BAL, fmtNum, latencyValueMult, masteryTier, MASTERY_NAMES, pendingSp, levelCapMult, levelOpCostMult } from './balance';
+import { BAL, fmtNum, ioComfortGb, latencyValueMult, masteryTier, MASTERY_NAMES, pendingSp, levelCapMult, levelOpCostMult } from './balance';
 import { computeDemand, computeMods, roundIndex } from './economy';
 import { DB_KINDS, specOf } from '../catalog/nodes';
 import { TIERS } from '../catalog/tiers';
@@ -65,6 +65,7 @@ interface SNode {
   lastHintAt: number;
   pendingHint: string | null; // set in pass A, applied when pass B builds the UI
   timeoutEma: number; // req/s currently dying of timeout here (drives breakers)
+  diskFull: boolean; // storage physics: writes refused this tick
   // realism layer (persists across ticks)
   warm01: number; // cache warm-up progress
   replLag: number; // replication lag seconds (replicas)
@@ -118,6 +119,8 @@ function blankUi(): NodeLive {
     classIn: zeros(),
     portIn: {},
     portOut: {},
+    dataGb: -1,
+    diskGb: 0,
   };
 }
 
@@ -190,6 +193,19 @@ export class Engine {
   private sawBudgetLow = false;
   private sawCrisis = false;
   private sawTailPain = false;
+  private sawDataGravity = false;
+  private sawHotKey = false;
+  private sawStampede = false;
+  private sawGray = false;
+  private sawCorr = false;
+  private sawBots = false;
+
+  // storage physics: accumulated data per DB node, flushed to the store at 1 Hz
+  private dataGbMap = new Map<string, number>();
+  private dataAdopted = false;
+
+  // telemetry ring buffers (1 Hz, engine-owned refs shared with the store)
+  private tele = { t: [] as number[], served: [] as number[], dropped: [] as number[], p95: [] as number[], p99: [] as number[], budget: [] as number[] };
 
   // case-study runtime: which scripted events have been injected this run
   private caseInjected = new Set<string>();
@@ -296,6 +312,7 @@ export class Engine {
         lastHintAt: -999,
         pendingHint: null,
         timeoutEma: 0,
+        diskFull: false,
         // loaded/adopted nodes are assumed warm; fresh placements reset to cold
         // when their boot completes (see pass A).
         warm01: 1,
@@ -395,6 +412,9 @@ export class Engine {
       this.crisisSince = -1;
       this.pendingRepBonus = 0;
       this.appliedBadDeployAt = -1;
+      this.dataGbMap = new Map(Object.entries(st.dataGb ?? {}));
+      this.dataAdopted = true;
+      this.tele = { t: [], served: [], dropped: [], p95: [], p99: [], budget: [] };
       this.adoptStats(st.stats);
       // node ids restart per run — never let a new run inherit old backlogs
       this.nodes = new Map();
@@ -438,6 +458,21 @@ export class Engine {
     const surging = st.surgeUntil > this.simTime;
     const cmdShed = st.shedUntil > this.simTime;
     const hasBreakers = st.research.includes('breakers');
+    const hasCoalescing = st.research.includes('coalescing');
+    const coldFloor = hasCoalescing ? BAL.coalescedColdFloor : BAL.cacheColdFloor;
+    if (!this.dataAdopted) {
+      // first tick of a fresh engine on a loaded save: adopt persisted data sizes
+      this.dataGbMap = new Map(Object.entries(st.dataGb ?? {}));
+      this.dataAdopted = true;
+    }
+    // a mass TTL expiry dumps the victim cache's warmth in one shot
+    if (fx.stampedeCache) {
+      const victim = this.nodes.get(fx.stampedeCache);
+      if (victim) {
+        victim.warm01 = Math.min(victim.warm01, hasCoalescing ? BAL.stampedeWarmCoalesced : BAL.stampedeWarmDrop);
+        this.sawStampede = true;
+      }
+    }
 
     const demand = computeDemand(st, fx.demandMult, mods);
     const byId = new Map(st.nodes.map((n) => [n.id, n]));
@@ -567,6 +602,59 @@ export class Engine {
           this.hintEarly(sn, `Connection storm — ${conns} clients on a pool of ${sn.connLimit}. Pool, replicate, or upgrade.`);
         }
       }
+
+      // storage physics: data has gravity. Queries slow past the comfort point
+      // (indexes outgrow RAM), maintenance pauses bite, and a full disk refuses
+      // writes. Upgrading buys comfort; sharding spreads the growth itself.
+      sn.diskFull = false;
+      if (DB_KINDS.has(pn.kind)) {
+        const gb = this.dataGbMap.get(sn.id) ?? 0;
+        const comfort = ioComfortGb(pn.level);
+        const disk = comfort * BAL.diskPerComfort;
+        if (gb > comfort) {
+          const over = gb / comfort - 1;
+          const ioMult = Math.max(BAL.ioCapFloor, 1 / (1 + BAL.ioSlowK * over));
+          cap *= ioMult;
+          if (ioMult < 0.85) {
+            this.sawDataGravity = true;
+            if (gb < disk) this.hintEarly(sn, `${gb.toFixed(1)} GB on a ${comfort.toFixed(0)} GB-comfort box — queries slowing. Upgrade or shard.`);
+          }
+        }
+        if (gb >= disk) {
+          sn.diskFull = true;
+          this.sawDataGravity = true;
+          this.hintEarly(sn, `DISK FULL (${gb.toFixed(0)}/${disk.toFixed(0)} GB) — writes refused. Upgrade or shard.`);
+        }
+        // maintenance window: autovacuum / compaction, offset per node
+        if (gb > BAL.vacuumMinGb) {
+          const phase = (this.simTime + (parseInt(sn.id.slice(1), 10) || 0) * 97) % BAL.vacuumCycleSec;
+          if (phase < BAL.vacuumDurSec) {
+            cap *= BAL.vacuumCapMult;
+            this.hintEarly(sn, pn.kind === 'postgres' ? 'autovacuum running — brief capacity dip' : 'compaction running — brief capacity dip');
+          }
+        }
+      }
+
+      // gray failure: slow-but-healthy. No hint — unless tracing exposes it.
+      if (fx.grayNode === sn.id) {
+        cap *= BAL.grayCapMult;
+        this.sawGray = true;
+        if (st.research.includes('obs2')) {
+          const ev = this.events.active.find((e) => e.kind === 'gray' && e.targetId === sn.id);
+          if (ev && this.simTime - ev.startsAt > BAL.grayTraceSec) {
+            this.hintEarly(sn, 'Tracing isolated a gray failure HERE — slow, not down');
+          }
+        }
+      }
+
+      // correlated failure: every node of one kind shares the same bad day
+      const corrMult = fx.degradedKinds.get(pn.kind === 'zone' ? (pn.zone?.template ?? '') : pn.kind);
+      if (corrMult !== undefined) {
+        cap *= corrMult;
+        this.sawCorr = true;
+        this.hintEarly(sn, 'Shared-dependency incident — all nodes of this kind degraded');
+      }
+
       sn.effCap = cap;
     }
 
@@ -822,7 +910,17 @@ export class Engine {
       const budget = eff * dt;
       const drawFrac = wBack <= budget || wBack === 0 ? 1 : budget / wBack;
       // realism: cold caches hit less; lagging replicas serve stale reads
-      const warmMult = spec.hitRate ? BAL.cacheColdFloor + (1 - BAL.cacheColdFloor) * sn.warm01 : 1;
+      const warmMult = spec.hitRate ? coldFloor + (1 - coldFloor) * sn.warm01 : 1;
+      // cache coherence: writes flowing through this path invalidate entries —
+      // a cache on a write-heavy path lands fewer read hits
+      let coherence = 1;
+      if (spec.hitRate?.read) {
+        const rw = intake[2] + intake[3];
+        if (rw > 0.5) {
+          const writeShare = intake[3] / rw;
+          coherence = Math.max(BAL.cacheInvalidFloor, 1 - BAL.cacheInvalidK * writeShare);
+        }
+      }
       const staleReads = pn.kind === 'replica' && sn.replLag > BAL.replLagStaleSec;
 
       let servedHere = 0;
@@ -861,9 +959,18 @@ export class Engine {
           continue;
         }
 
+        // storage physics: a full disk refuses writes outright
+        if (c === 3 && sn.diskFull && spec.serves.includes('write')) {
+          dropRate += take / dt;
+          ui.drops += take / dt;
+          sn.timeoutEma += take / dt; // callers' breakers should see this too
+          continue;
+        }
+
         let rest = take;
         let serveNow = 0;
-        const hr = Math.min(0.97, (spec.hitRate?.[cls] ?? 0) * warmMult + (spec.hitRate?.[cls] ? sn.cacheBonus : 0));
+        const hrCoherence = c === 2 ? coherence : 1;
+        const hr = Math.min(0.97, (spec.hitRate?.[cls] ?? 0) * warmMult * hrCoherence + (spec.hitRate?.[cls] ? sn.cacheBonus : 0));
         if (hr > 0) {
           serveNow += take * hr;
           rest = take * (1 - hr);
@@ -886,6 +993,15 @@ export class Engine {
           if (port && liveOuts.length > 0) {
             const smart = spec.smartSplit || mods.smartSplitAll;
             const weights = this.splitWeights(liveOuts, smart);
+            // hot key: a celebrity key pins a share of this router's traffic
+            // to ONE shard — even splits can't save you from skewed access
+            if (fx.hotKeyTarget === sn.id && port === 'data' && liveOuts.length >= 2) {
+              for (let i = 0; i < weights.length; i++) weights[i] *= 1 - BAL.hotKeyShare;
+              weights[0] += BAL.hotKeyShare; // stable victim: the first shard
+              const hotT = this.nodes.get(liveOuts[0].target);
+              if (hotT) this.hintEarly(hotT, 'Hot partition — a celebrity key lives here');
+              this.sawHotKey = true;
+            }
             // circuit breakers: a distressed dependency trips its callers open —
             // that share fails fast as cheap shed instead of feeding timeouts.
             // Jobs are exempt: queues already buffer, and patience is their point.
@@ -936,6 +1052,10 @@ export class Engine {
         if (serveNow > 1e-9) {
           servedHere += serveNow;
           if (c === 2) readServed += serveNow;
+          // storage physics: served writes accumulate data (data has gravity)
+          if (c === 3 && DB_KINDS.has(pn.kind)) {
+            this.dataGbMap.set(sn.id, (this.dataGbMap.get(sn.id) ?? 0) + serveNow * BAL.gbPerWrite);
+          }
           const latMult =
             c === JOB
               ? reqLat > 300000
@@ -943,7 +1063,8 @@ export class Engine {
                 : 1
               : latencyValueMult(reqLat, demand.latSensitive);
           const staleMult = staleReads && c === 2 ? BAL.replStaleValueMult : 1;
-          revenue += serveNow * demand.value[c] * latMult * staleMult * mods.revenueMult;
+          // bot floods consume capacity but pay nothing for their share
+          revenue += serveNow * demand.value[c] * latMult * staleMult * mods.revenueMult * (1 - fx.botShare);
           if (spec.perServeCost) perServeCosts += serveNow * spec.perServeCost;
           // p95 is user-facing: async jobs are latency-tolerant by design and
           // would otherwise drown the gauge in queue-wait seconds.
@@ -973,6 +1094,10 @@ export class Engine {
       ui.replLagSec = pn.kind === 'replica' ? sn.replLag : -1;
       ui.conns = sn.conns;
       ui.connLimit = sn.connLimit;
+      if (DB_KINDS.has(pn.kind)) {
+        ui.dataGb = this.dataGbMap.get(sn.id) ?? 0;
+        ui.diskGb = ioComfortGb(pn.level) * BAL.diskPerComfort;
+      }
       ui.spark = sn.spark;
       ui.role = sn.role;
       if (sn.offline) ui.hint = 'OFFLINE';
@@ -982,6 +1107,7 @@ export class Engine {
       sn.ui = ui;
     }
     if (echoRate > 3) this.sawRetryStorm = true;
+    if (fx.botShare > 0.05) this.sawBots = true;
 
     // ---- swap edge buffers ----
     for (const e of this.edges.values()) {
@@ -1146,6 +1272,18 @@ export class Engine {
         if (sn.spark.length > BAL.sparkLen) sn.spark.shift();
         sn.role = this.roleOf(sn, byId);
       }
+      // telemetry ring buffers for the history charts
+      this.tele.t.push(Math.round(this.simTime));
+      this.tele.served.push(Math.round(this.servedEma * 10) / 10);
+      this.tele.dropped.push(Math.round(this.dropsEma * 10) / 10);
+      this.tele.p95.push(Math.round(this.p95));
+      this.tele.p99.push(Math.round(this.p99));
+      this.tele.budget.push(Math.round(this.sloBudget01 * 1000) / 1000);
+      if (this.tele.t.length > BAL.teleLen) {
+        for (const k of Object.keys(this.tele) as (keyof typeof this.tele)[]) this.tele[k].shift();
+      }
+      // flush accumulated data sizes so they persist in the save
+      if (this.dataGbMap.size > 0) st.setDataGb(Object.fromEntries(this.dataGbMap));
       this.autoscaler.evaluate(
         this.store,
         (id) => this.nodes.get(id)?.utilSm ?? 0,
@@ -1221,6 +1359,7 @@ export class Engine {
         windowSec: BAL.sloWindowSec,
       },
       crisis: this.crisis,
+      telemetry: this.tele,
     };
     const statsCopy = { ...this.stats };
     this.lastPushedStats = statsCopy;
@@ -1424,6 +1563,11 @@ export class Engine {
         db_slow: 'Slow queries are a capacity event: whatever headroom the primary had is what you kept. Caches and replicas ARE the headroom.',
         outage: 'Zones fail as a unit. Blast radius is a design decision — regions, N+1 and an orchestrator make failures boring.',
         dep_failure: "Your p95 includes other people's outages. Keep your own hops fast enough to absorb a slow third party.",
+        gray: 'It never showed as down — only as slow. Health checks answer "alive?", the tail answers "well?". Trust the tail.',
+        corr_failure: 'N copies of the same thing share the same fate. Redundancy needs independence — diversity of kind is the hedge.',
+        hot_key: "Even shards can't split one famous key. Cache the hot key in front, or redesign the key itself.",
+        stampede: 'The cache protected you right up until every copy of a hot key expired at once. Coalesce the refill: one fetch, everyone else gets stale.',
+        bot_flood: 'Load without revenue is a cost decision: shed it at the gateway for pennies, or serve it at the price of real users.',
       };
       st.pushPostmortem({
         id: this.pmCounter++,
@@ -1557,7 +1701,9 @@ export class Engine {
     }
     if (DB_KINDS.has(pn.kind)) {
       const conn = sn.connLimit > 0 && sn.conns > 0 ? ` · conns ${sn.conns}/${sn.connLimit}` : '';
-      return `r ${fmtNum(ui.classIn[2])} · w ${fmtNum(ui.classIn[3])}/s${conn}`;
+      const gb = this.dataGbMap.get(sn.id) ?? 0;
+      const data = gb > 0.5 ? ` · ${gb < 10 ? gb.toFixed(1) : Math.round(gb)} GB` : '';
+      return `r ${fmtNum(ui.classIn[2])} · w ${fmtNum(ui.classIn[3])}/s${conn}${data}`;
     }
     if (pn.kind === 'worker' || pn.zone?.template === 'worker') return `draining ${fmtNum(ui.served)} jobs/s`;
     if (pn.kind === 's3') return `object store · ${fmtNum(ui.served)}/s`;
@@ -1716,6 +1862,13 @@ export class Engine {
     L('incident-command', this.sawCrisis);
     if (this.p95 > 0 && this.p99 > 3 * this.p95 && this.servedEma > 5) this.sawTailPain = true;
     L('tail-latency', this.sawTailPain);
+    // phase-2 physics
+    L('data-gravity', this.sawDataGravity);
+    L('hot-key', this.sawHotKey);
+    L('stampede', this.sawStampede);
+    L('gray-failure', this.sawGray);
+    L('correlated-failure', this.sawCorr);
+    L('bot-flood', this.sawBots);
   }
 
   private checkAchievements(st: GameStore, byId: Map<string, GameStore['nodes'][number]>, profitNow: number) {

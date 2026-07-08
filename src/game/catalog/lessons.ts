@@ -197,6 +197,48 @@ export const LESSONS: LessonDef[] = [
     body:
       "An incident is running and you have a toolkit: surge capacity (expensive, instant headroom), emergency load-shedding (fail cheap while you think), rollback (when the change was the cause). Real incident command works the same way — one person drives, actions are deliberate, and the goal is MITIGATE FIRST, diagnose later. Restore service, then find root cause in the postmortem. The worst incidents aren't the biggest failures; they're the small ones nobody took command of.",
   },
+  {
+    id: 'data-gravity',
+    title: 'Data has gravity',
+    tag: 'storage physics',
+    body:
+      "Your database was fine at 5 GB and is struggling at 50 — nothing changed except the data. Indexes stop fitting in RAM, every query touches more disk, maintenance (vacuum, compaction) takes longer and hurts more, and one day the disk simply fills and writes stop. Scale reveals problems that weren't there on day one. The escape routes: bigger boxes (upgrades buy comfort), deleting data (nobody ever does), or sharding — which spreads the GROWTH itself, not just the queries.",
+  },
+  {
+    id: 'hot-key',
+    title: 'The celebrity problem',
+    tag: 'hot partitions',
+    body:
+      "Your shards split traffic evenly — until one key got famous. Now half the load hammers ONE shard while its siblings idle, and adding more shards fixes nothing: the hot key still lives in exactly one place. This is what took down early Twitter every time a celebrity tweeted. The real fixes: cache the hot key in front (reads never reach the shard), or split the key itself (celebrity followers sharded N ways). Even key DESIGN is capacity planning.",
+  },
+  {
+    id: 'stampede',
+    title: 'The thundering herd',
+    tag: 'cache stampede',
+    body:
+      "A popular cache entry expired, and every request that missed went to the database AT ONCE — thousands of identical queries for the same key. That's a cache stampede: the cache was protecting you exactly until the moment it didn't. Request coalescing fixes it with one idea: only ONE request refreshes an expired key; everyone else briefly gets the stale copy (stale-while-revalidate). Facebook's memcache paper calls this 'leases' — the same trick at a billion rps.",
+  },
+  {
+    id: 'gray-failure',
+    title: 'Slow is the new down',
+    tag: 'gray failure',
+    body:
+      "A node is failing right now and its health check says it's fine. That's a GRAY failure: not down, just slow — and slow is worse, because nothing routes around it. Health checks answer 'can you reply?', not 'are you replying well?'. The tell is in the tail: p99 detaches while averages look normal. This is why distributed tracing earns its bill — it finds the one slow hop your green dashboards are hiding.",
+  },
+  {
+    id: 'correlated-failure',
+    title: 'They all fail together',
+    tag: 'correlated failure',
+    body:
+      "Every node of one kind just degraded at once — same registry, same provider, same bug. Redundancy math assumes failures are INDEPENDENT; correlated failures break the assumption: N copies of the same thing share the same fate. Real outages love this shape: a bad TLS cert in every pod, a cloud provider's managed-Redis incident, one poisoned container image. The hedge is diversity — of kind, of vendor, of version — which is exactly why 'boring' polyglot architectures survive.",
+  },
+  {
+    id: 'bot-flood',
+    title: 'Traffic that pays nothing',
+    tag: 'abuse',
+    body:
+      "Requests are up and revenue isn't — you're being scraped. Bots consume real capacity and pay $0, so 'serve everything' is the wrong instinct: every bot served at peak is a paying user dropped. The answer is the same door that sheds overload: rate limiting at the gateway fails the flood cheaply while humans sail through. Distinguishing the two (and deciding how aggressively to shed) is a real product decision at every big platform.",
+  },
 ];
 
 export const lessonById = new Map(LESSONS.map((l) => [l.id, l]));

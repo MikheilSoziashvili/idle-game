@@ -13,6 +13,12 @@ export interface EventEffects {
   disabledNodes: Set<string>;
   degradedNodes: Map<string, number>; // node id -> capacity mult (redundant outage)
   badDeployZone: string | null; // set for exactly one tick when a bad deploy fires
+  // phase-2 physics
+  hotKeyTarget: string | null; // shard edge target pinned by a celebrity key
+  grayNode: string | null; // slow-but-healthy victim (invisible by design)
+  stampedeCache: string | null; // one tick: cache that just mass-expired
+  degradedKinds: Map<string, number>; // kind -> capacity mult (correlated failure)
+  botShare: number; // 0..1 of current traffic that pays nothing
 }
 
 interface EventLogger {
@@ -45,6 +51,11 @@ export class EventSystem {
       disabledNodes: new Set(),
       degradedNodes: new Map(),
       badDeployZone: null,
+      hotKeyTarget: null,
+      grayNode: null,
+      stampedeCache: null,
+      degradedKinds: new Map(),
+      botShare: 0,
     };
 
     // Schedule (random events pause in sandbox and during case studies).
@@ -98,9 +109,17 @@ export class EventSystem {
     const incidentsUnlocked = st.lifetimeRev >= BAL.incidentsAfterRevenue;
     const pool: ActiveEvent['kind'][] = ['spike'];
     if (incidentsUnlocked) {
-      pool.push('db_slow', 'dep_failure', 'spike');
+      pool.push('db_slow', 'dep_failure', 'spike', 'bot_flood');
       if (st.regions.length > 0 || st.nodes.length > 6) pool.push('outage');
       if (st.nodes.some((n) => n.kind === 'zone')) pool.push('bad_deploy');
+      if (st.nodes.length > 5) pool.push('gray');
+      // correlated failure needs 2+ active nodes of a capacity-bearing kind
+      if (this.corrCandidate(st.nodes)) pool.push('corr_failure');
+      // stampedes need a cache that's actually carrying traffic (engine can't
+      // be read from here, so gate on existence — the start handler re-checks)
+      if (st.nodes.some((n) => ['redis', 'memcached', 'varnish', 'cdn', 'fastly'].includes(n.kind) && !n.disabled)) pool.push('stampede');
+      // hot keys need a shard router with 2+ shards behind it
+      if (st.nodes.some((n) => n.kind === 'shardrouter' && !n.disabled)) pool.push('hot_key');
     }
     // The first event is always a gentle scripted spike.
     const kind = this.firedScripted ? pool[Math.floor(Math.random() * pool.length)] : 'spike';
@@ -175,7 +194,103 @@ export class EventSystem {
           started: false,
         });
         break;
+      case 'gray': {
+        const candidates = st.nodes.filter((n) => !n.disabled && n.kind !== 'users' && n.kind !== 'ingress' && n.kind !== 'zone');
+        if (candidates.length === 0) break;
+        const victim = candidates[Math.floor(Math.random() * candidates.length)];
+        this.active.push({
+          id,
+          kind,
+          label: 'something feels slow…', // the whole point: monitoring can't name it
+          startsAt: t,
+          endsAt: t + BAL.grayDurSec,
+          warned: true,
+          started: false,
+          targetId: victim.id,
+        });
+        break;
+      }
+      case 'corr_failure': {
+        const victimKind = this.corrCandidate(st.nodes);
+        if (!victimKind) break;
+        this.active.push({
+          id,
+          kind,
+          label: `shared-dependency incident — every ${victimKind} degraded`,
+          startsAt: t,
+          endsAt: t + BAL.corrDurSec,
+          warned: true,
+          started: false,
+          targetKind: victimKind,
+        });
+        break;
+      }
+      case 'stampede': {
+        const caches = st.nodes.filter((n) => ['redis', 'memcached', 'varnish', 'cdn', 'fastly'].includes(n.kind) && !n.disabled);
+        if (caches.length === 0) break;
+        const victim = caches[Math.floor(Math.random() * caches.length)];
+        this.active.push({
+          id,
+          kind,
+          label: 'mass cache expiry — thundering herd',
+          startsAt: t,
+          endsAt: t + 1, // instantaneous: the warmth dump is the event
+          warned: true,
+          started: false,
+          targetId: victim.id,
+        });
+        break;
+      }
+      case 'hot_key': {
+        const routers = st.nodes.filter((n) => n.kind === 'shardrouter' && !n.disabled);
+        if (routers.length === 0) break;
+        const router = routers[Math.floor(Math.random() * routers.length)];
+        this.active.push({
+          id,
+          kind,
+          label: 'celebrity key — one shard is on fire',
+          startsAt: t,
+          endsAt: t + BAL.hotKeyDurSec,
+          warned: true,
+          started: false,
+          targetId: router.id, // engine resolves which SHARD gets pinned
+        });
+        break;
+      }
+      case 'bot_flood': {
+        const mult = BAL.botFloodMult[0] + Math.random() * (BAL.botFloodMult[1] - BAL.botFloodMult[0]);
+        const dur = BAL.botFloodDurSec[0] + Math.random() * (BAL.botFloodDurSec[1] - BAL.botFloodDurSec[0]);
+        this.active.push({
+          id,
+          kind,
+          label: 'scraper botnet',
+          startsAt: t,
+          endsAt: t + dur,
+          warned: true,
+          started: false,
+          mult,
+        });
+        break;
+      }
     }
+  }
+
+  /** Most numerous capacity-bearing kind with 2+ active nodes, or null. */
+  private corrCandidate(nodes: Pick<GameStore, 'nodes'>['nodes']): string | null {
+    const counts = new Map<string, number>();
+    for (const n of nodes) {
+      if (n.disabled || n.kind === 'users' || n.kind === 'zone' || n.kind === 'ingress') continue;
+      counts.set(n.kind, (counts.get(n.kind) ?? 0) + 1);
+    }
+    let best: string | null = null;
+    let bestN = 1;
+    for (const [k, c] of counts) {
+      if (c > bestN) {
+        best = k;
+        bestN = c;
+      }
+    }
+    return best;
   }
 
   private onStart(ev: ActiveEvent, st: Pick<GameStore, 'nodes' | 'regions'>, logger: EventLogger, fx: EventEffects) {
@@ -210,6 +325,27 @@ export class EventSystem {
         }
         break;
       }
+      case 'gray':
+        // deliberately quiet: no toast, a vague log line. The tail will tell.
+        logger.log('warn', 'latency alert: p99 drifting — no failing health checks found');
+        break;
+      case 'corr_failure':
+        logger.log('err', `INCIDENT ${ev.label}`);
+        logger.toast('warn', 'Correlated failure', `${ev.targetKind} nodes share a dependency — and now they share an incident. Diversity is the hedge.`);
+        break;
+      case 'stampede':
+        fx.stampedeCache = ev.targetId ?? null;
+        logger.log('err', `INCIDENT ${ev.label}`);
+        logger.toast('warn', 'Cache stampede', 'A hot TTL expired everywhere at once. Misses are hammering the origin while the cache re-warms.');
+        break;
+      case 'hot_key':
+        logger.log('err', `INCIDENT ${ev.label}`);
+        logger.toast('warn', 'Hot partition', `${Math.round(BAL.hotKeyShare * 100)}% of routed traffic is pinned to ONE shard. More shards won't help — a cache in front will.`);
+        break;
+      case 'bot_flood':
+        logger.log('warn', `ABUSE ${ev.label} — traffic ×${ev.mult?.toFixed(1)}, none of it pays`);
+        logger.toast('warn', 'Bot flood', 'Load is up, revenue is not. Rate limiting at the gateway sheds it cheaply.');
+        break;
     }
   }
 
@@ -247,6 +383,24 @@ export class EventSystem {
       }
       case 'bad_deploy':
         break;
+      case 'gray':
+        fx.grayNode = ev.targetId ?? null;
+        break;
+      case 'corr_failure':
+        if (ev.targetKind) fx.degradedKinds.set(ev.targetKind, BAL.corrCapMult);
+        break;
+      case 'stampede':
+        break; // one-shot at start
+      case 'hot_key':
+        fx.hotKeyTarget = ev.targetId ?? null;
+        break;
+      case 'bot_flood': {
+        const m = ev.mult ?? 2;
+        fx.demandMult *= m;
+        // the flood's share of TOTAL traffic pays nothing
+        fx.botShare = Math.max(fx.botShare, (m - 1) / m);
+        break;
+      }
     }
   }
 
@@ -335,7 +489,9 @@ export class EventSystem {
   }
 
   hasActiveIncident(): boolean {
-    return this.active.some((e) => e.started && e.kind !== 'spike');
+    // spikes are opportunities and bot floods are abuse (drops already hurt);
+    // neither should passively drain reputation like a real incident does
+    return this.active.some((e) => e.started && e.kind !== 'spike' && e.kind !== 'bot_flood');
   }
 
   snapshot(): ActiveEvent[] {

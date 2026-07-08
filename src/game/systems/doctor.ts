@@ -152,6 +152,22 @@ export function diagnose(st: GameStore): Finding[] {
     }
   }
 
+  // --- storage physics: data has gravity ------------------------------------------
+  for (const n of nodes.filter((x) => DB_KINDS.has(x.kind) && x.kind !== 'replica')) {
+    const s = stats(n.id);
+    if (!s || s.dataGb < 0 || s.diskGb <= 0) continue;
+    const fill = s.dataGb / s.diskGb;
+    if (fill > 0.7) {
+      f.push({
+        severity: fill > 0.9 ? 'crit' : 'warn',
+        title: `${nameOf(n)} is ${Math.round(fill * 100)}% full (${Math.round(s.dataGb)}/${Math.round(s.diskGb)} GB)`,
+        detail: fill > 0.9 ? 'At 100% the disk refuses writes outright — that is a full outage for anything that saves data.' : 'Queries are already slowing as the data outgrows the box.',
+        fix: 'Upgrade it (bigger disk + more comfort), or shard — a Shard Router splits the GROWTH itself, not just the queries.',
+      });
+      break; // the worst one is enough
+    }
+  }
+
   // --- observability ------------------------------------------------------------
   if (!nodes.some((n) => n.kind !== 'zone' && specOf(n.kind).special === 'metrics' && !n.disabled)) {
     f.push({

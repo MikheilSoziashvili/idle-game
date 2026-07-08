@@ -78,6 +78,15 @@ export const RESEARCH: ResearchDef[] = [
     grants: ['Unlocks Shard Router (writes scale horizontally)'],
   },
   {
+    id: 'coalescing',
+    name: 'Request Coalescing',
+    icon: '≋',
+    desc: 'Stale-while-revalidate + single-flight: when a hot key expires, ONE request refreshes it while everyone else gets the stale copy. Stampedes stop stampeding.',
+    cost: 85,
+    deps: ['caching'],
+    grants: ['Cache stampedes lose half as much warmth', 'Cold-start floor 25% → 40%'],
+  },
+  {
     id: 'breakers',
     name: 'Circuit Breakers',
     icon: '⌁',

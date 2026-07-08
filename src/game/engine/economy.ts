@@ -1,4 +1,4 @@
-import { BAL } from './balance';
+import { BAL, diurnalMult } from './balance';
 import { TIERS } from '../catalog/tiers';
 import { resolveCase } from '../catalog/challenge';
 import type { GameStore } from '../state/store';
@@ -58,7 +58,7 @@ export function computeDemand(st: GameStore, eventDemandMult: number, mods: Glob
   const rpsCap = BAL.rpsCaps[round] * capMult;
   const rawOffered = st.sandbox
     ? st.sandboxDemand
-    : st.scale * totalBase * mods.demandMult;
+    : st.scale * totalBase * mods.demandMult * diurnalMult(st.simTime); // the internet has evenings
   const capped = Math.min(rawOffered * eventDemandMult, st.sandbox ? Infinity : rpsCap * eventDemandMult);
   // each launched tier owns a share of the firehose proportional to its baseRps
   const perTier: TierDemand[] = [];

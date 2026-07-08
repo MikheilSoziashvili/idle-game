@@ -917,6 +917,154 @@ function DoctorPanel() {
 
 // ---------------------------------------------------------------- history --
 
+interface TeleSeries {
+  name: string;
+  color: string; // CSS var — validated against the modal surface
+  values: number[];
+  area?: boolean;
+}
+
+/**
+ * Compact time-series figure for the telemetry section: thin 2px lines,
+ * recessive grid, hover crosshair + tooltip, legend chips for multi-series,
+ * end-dots as direct labels. One y-axis per figure, always.
+ */
+function TeleChart({ title, unit, series, yMax, fmt }: { title: string; unit: string; series: TeleSeries[]; yMax?: number; fmt?: (v: number) => string }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const W = 320;
+  const H = 64;
+  const n = Math.max(...series.map((s) => s.values.length), 0);
+  if (n < 2) return null;
+  const F = fmt ?? ((v: number) => fmtNum(v));
+  const max = yMax ?? Math.max(1e-6, ...series.flatMap((s) => s.values));
+  const x = (i: number) => (i / (n - 1)) * W;
+  const y = (v: number) => H - 3 - (Math.min(v, max) / max) * (H - 8);
+  const pts = (vals: number[]) => vals.map((v, i) => `${x(i + (n - vals.length)).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const hi = hover !== null ? Math.max(0, Math.min(n - 1, hover)) : null;
+
+  return (
+    <div className="tele-chart">
+      <div className="tele-head">
+        <span className="tele-title">{title}</span>
+        {series.length > 1 && (
+          <span className="tele-legend">
+            {series.map((s) => (
+              <span key={s.name}>
+                <i style={{ background: s.color }} /> {s.name}
+              </span>
+            ))}
+          </span>
+        )}
+        <span className="tele-now mono">
+          {hi !== null ? `t−${n - 1 - hi}s · ` : ''}
+          {series.map((s) => `${series.length > 1 ? s.name + ' ' : ''}${F(s.values[hi ?? s.values.length - 1] ?? 0)}`).join(' · ')} {unit}
+        </span>
+      </div>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        className="tele-svg"
+        onMouseMove={(e) => {
+          const r = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
+          setHover(Math.round(((e.clientX - r.left) / r.width) * (n - 1)));
+        }}
+        onMouseLeave={() => setHover(null)}
+        role="img"
+        aria-label={`${title}, last ${n} seconds`}
+      >
+        {[0.25, 0.5, 0.75].map((g) => (
+          <line key={g} x1={0} x2={W} y1={H - 3 - g * (H - 8)} y2={H - 3 - g * (H - 8)} className="tele-grid" />
+        ))}
+        {series.map((s) =>
+          s.area ? (
+            <polygon key={s.name} points={`0,${H - 3} ${pts(s.values)} ${W},${H - 3}`} fill={s.color} opacity={0.14} stroke="none" />
+          ) : null,
+        )}
+        {series.map((s) => (
+          <polyline key={s.name} points={pts(s.values)} fill="none" stroke={s.color} strokeWidth={2} vectorEffect="non-scaling-stroke" />
+        ))}
+        {series.map((s) => (
+          <circle key={`${s.name}-end`} cx={x(n - 1)} cy={y(s.values[s.values.length - 1] ?? 0)} r={2.6} fill={s.color} />
+        ))}
+        {hi !== null && <line x1={x(hi)} x2={x(hi)} y1={0} y2={H} className="tele-cross" />}
+        {hi !== null &&
+          series.map((s) => {
+            const v = s.values[hi];
+            return v === undefined ? null : <circle key={`${s.name}-h`} cx={x(hi)} cy={y(v)} r={3.2} fill={s.color} stroke="var(--panel)" strokeWidth={1.5} />;
+          })}
+      </svg>
+    </div>
+  );
+}
+
+function TelemetrySection() {
+  const tele = useGame((s) => s.live.telemetry);
+  if (tele.t.length < 5) {
+    return <p style={{ color: 'var(--faint)', fontSize: 12 }}>Telemetry warms up as the simulation runs — come back in a minute.</p>;
+  }
+  return (
+    <>
+      <div className="tele-grid-wrap">
+        <TeleChart
+          title="throughput"
+          unit="rps"
+          series={[
+            { name: 'served', color: 'var(--ok)', values: tele.served, area: true },
+            { name: 'dropped', color: 'var(--bad)', values: tele.dropped },
+          ]}
+        />
+        <TeleChart
+          title="latency"
+          unit="ms"
+          series={[
+            { name: 'p95', color: 'var(--accent)', values: tele.p95 },
+            { name: 'p99', color: 'var(--amber, #b8860b)', values: tele.p99 },
+          ]}
+        />
+        <TeleChart
+          title="error budget"
+          unit=""
+          yMax={1}
+          fmt={(v) => `${Math.round(v * 100)}%`}
+          series={[{ name: 'budget', color: 'var(--ok)', values: tele.budget, area: true }]}
+        />
+      </div>
+      <details className="tele-table">
+        <summary>table view (last 30 s)</summary>
+        <div style={{ overflowX: 'auto' }}>
+          <table>
+            <thead>
+              <tr>
+                <th>t</th>
+                <th>served</th>
+                <th>dropped</th>
+                <th>p95</th>
+                <th>p99</th>
+                <th>budget</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tele.t.slice(-30).map((t, i0) => {
+                const i = tele.t.length - 30 + i0;
+                return (
+                  <tr key={t}>
+                    <td>{t}s</td>
+                    <td>{tele.served[i]}</td>
+                    <td>{tele.dropped[i]}</td>
+                    <td>{tele.p95[i]}ms</td>
+                    <td>{tele.p99[i]}ms</td>
+                    <td>{Math.round((tele.budget[i] ?? 0) * 100)}%</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </>
+  );
+}
+
 function HistoryPanel() {
   const history = useGame((s) => s.history);
   const stats = useGame((s) => s.stats);
@@ -941,6 +1089,14 @@ function HistoryPanel() {
 
   return (
     <div>
+      <h4 style={{ margin: '0 0 6px', fontSize: 11, color: 'var(--faint)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+        Telemetry — last {Math.round(BAL.teleLen / 60)} min
+      </h4>
+      <TelemetrySection />
+
+      <h4 style={{ margin: '16px 0 6px', fontSize: 11, color: 'var(--faint)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+        All-time records
+      </h4>
       <div className="hist-stats">
         {statGrid.map(([k, v]) => (
           <div key={k} className="hist-stat">

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { BAL, fmtMoney, fmtNum, pendingSp } from '../../game/engine/balance';
+import { BAL, diurnalMult, fmtMoney, fmtNum, pendingSp } from '../../game/engine/balance';
 import { roundIndex } from '../../game/engine/economy';
 import { mandateById } from '../../game/catalog/mandates';
 import { researchOpen, useGame } from '../../game/state/store';
@@ -254,6 +254,15 @@ export default function Dashboard() {
       {activeEvent && (
         <span className={`event-pill ${activeEvent.kind === 'spike' ? '' : 'incident'}`} style={{ position: 'static', animationDuration: '1.6s' }}>
           {activeEvent.kind === 'spike' ? '▲' : '✖'} {activeEvent.label}
+        </span>
+      )}
+      {!sandbox && !caseId && (
+        <span
+          className="day-chip mono"
+          title={`The internet has evenings: demand swings ±${Math.round(BAL.diurnalAmp * 100)}% over an ${Math.round(BAL.dayLengthSec / 60)}-minute day. Plan capacity for the PEAK, not the average.`}
+        >
+          {diurnalMult(simTime) >= 1 ? '☀' : '☾'} {diurnalMult(simTime) >= 1 ? '+' : ''}
+          {Math.round((diurnalMult(simTime) - 1) * 100)}%
         </span>
       )}
 

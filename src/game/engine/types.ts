@@ -208,6 +208,9 @@ export interface NodeLive {
   classIn: number[]; // per-class in-rates [static, api, read, write, job]
   portIn: Partial<Record<PortType, number>>; // rps arriving per in-port type
   portOut: Partial<Record<PortType, number>>; // rps leaving per out-port type
+  // storage physics (databases): data has gravity
+  dataGb: number; // accumulated data from served writes, -1 if n/a
+  diskGb: number; // disk ceiling at this level, 0 if n/a
 }
 
 export interface EdgeLive {
@@ -250,13 +253,26 @@ export interface LogEntry {
 
 export interface ActiveEvent {
   id: number;
-  kind: 'spike' | 'db_slow' | 'outage' | 'dep_failure' | 'bad_deploy';
+  kind:
+    | 'spike'
+    | 'db_slow'
+    | 'outage'
+    | 'dep_failure'
+    | 'bad_deploy'
+    // phase-2 physics: the failures that page real teams
+    | 'hot_key' // one shard takes disproportionate load (celebrity problem)
+    | 'stampede' // mass cache-TTL expiry → thundering herd on the origin
+    | 'gray' // slow-but-not-down; health reads fine, tail latency doesn't
+    | 'corr_failure' // a shared dependency degrades every node of one kind
+    | 'bot_flood'; // traffic that pays nothing
   label: string;
   startsAt: number;
   endsAt: number;
   warned: boolean;
   started: boolean;
   regionId?: string;
+  targetId?: string; // hot_key / gray / stampede victim
+  targetKind?: string; // corr_failure victim kind
   mult?: number;
 }
 

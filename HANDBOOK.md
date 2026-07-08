@@ -227,6 +227,16 @@ The SRE mechanic, made playable:
 - **Circuit Breakers** (research): callers stop forwarding to a drowning dependency and fail fast as cheap 429s — the edge turns amber with a `⌁ open` badge, probes half-open, closes when the target recovers. Kills retry storms at the source.
 - **Incident Command**: when something is actively burning, a red command bar appears with real mitigations — **Surge** (+40% capacity for 30 s, costs real money), **Shed load** (20 s of global fail-cheap), **Roll back** (when the deploy was the cause — you lose the feature, the node comes back healthy). Commanding an incident visibly earns rep back in the postmortem. Mitigate first, diagnose later.
 
+### Deep physics (phase 2)
+
+- **Data has gravity**: served writes accumulate GB on every database (shown in the Inspector and on the card). Past the comfort point queries slow (indexes outgrow RAM); maintenance windows (autovacuum/compaction) dip capacity every few minutes; a **full disk refuses writes outright**. Upgrades buy comfort; **sharding spreads the growth itself**.
+- **Hot partitions**: a celebrity key pins ~45% of a Shard Router's traffic to ONE shard — adding shards won't help. Cache in front, or ride it out.
+- **Cache coherence**: writes flowing through a cache invalidate it — hit rates sag on write-heavy paths. **Stampedes** (mass TTL expiry) dump a cache's warmth at once; **Request Coalescing** research halves the damage and lifts the cold floor.
+- **Gray failures**: a node goes slow-but-not-down — health reads fine, no hint appears. The tail (p99) is the tell; **Distributed Tracing** exposes the culprit after a few seconds.
+- **Correlated failures**: every node of one kind degrades together (shared registry/provider/image). Redundancy needs independence — diversity of kind is the hedge.
+- **The internet has evenings**: demand swings ±30% over an 8-minute day (☀/☾ chip in the dashboard). Plan for the peak. **Bot floods** add load that pays $0 — shed them at the gateway.
+- **Telemetry**: Company History (🕘) now opens with 5 minutes of charts — throughput, p95/p99, error budget — with hover inspection and a table view.
+
 ---
 
 ## 10. Products & funding rounds

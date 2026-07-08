@@ -230,6 +230,50 @@ export const BAL = {
   cmdRepBonus: 1.5, // rep refund for commanding an incident visibly
   crisisDropShare: 0.15, // drops/served ratio that flips the crisis banner
 
+  // --- storage physics: data has gravity ---------------------------------------
+  // Served writes accumulate data. Queries slow as tables outgrow the box
+  // (indexes stop fitting), maintenance pauses bite, and a full disk refuses
+  // writes. Upgrades buy comfort; sharding spreads the growth itself.
+  gbPerWrite: 0.002, // GB accumulated per served write
+  ioComfortGb: 8, // level-1 data size where queries stay snappy…
+  ioComfortLevelPow: 1.7, // …scaling steeply with level (RAM + better indexes)
+  ioSlowK: 0.5, // capacity multiplier = 1/(1 + k·(data/comfort − 1)) past comfort
+  ioCapFloor: 0.45,
+  diskPerComfort: 4, // disk ceiling = comfort × this; full disk = writes refused
+  vacuumCycleSec: 240, // per-node maintenance cadence (offset by id)
+  vacuumDurSec: 6,
+  vacuumCapMult: 0.6,
+  vacuumMinGb: 1, // young databases don't pause
+
+  // --- hot keys / hot partitions --------------------------------------------------
+  hotKeyShare: 0.45, // share of the router's traffic pinned to ONE shard
+  hotKeyDurSec: 45,
+
+  // --- cache coherence --------------------------------------------------------------
+  // Writes invalidate: a cache in a write-heavy path lands fewer read hits.
+  cacheInvalidK: 0.5, // hit-rate multiplier = 1 − k·writeShare (floored)
+  cacheInvalidFloor: 0.55,
+  stampedeWarmDrop: 0.12, // warmth after a mass TTL expiry…
+  stampedeWarmCoalesced: 0.55, // …with Request Coalescing researched
+  coalescedColdFloor: 0.4, // coalescing also lifts the cold-start floor (from 0.25)
+
+  // --- gray & correlated failures -----------------------------------------------------
+  grayCapMult: 0.75,
+  grayLatencyMs: 130,
+  grayDurSec: 45,
+  grayTraceSec: 8, // with Distributed Tracing, the gray node is exposed after this
+  corrCapMult: 0.55,
+  corrDurSec: 35,
+
+  // --- diurnal traffic & bots -----------------------------------------------------------
+  dayLengthSec: 480, // one sim "day" — capacity planning happens against the peak
+  diurnalAmp: 0.3, // demand swings ±30% around the mean
+  botFloodMult: [1.8, 2.8] as [number, number], // extra load…
+  botFloodDurSec: [40, 80] as [number, number], // …that pays NOTHING
+
+  // --- telemetry -------------------------------------------------------------------------
+  teleLen: 300, // 1 Hz history samples for the dashboard charts (5 min)
+
   // --- first-failure insurance -----------------------------------------------------
   insuranceWindowSec: 30,
 
@@ -282,6 +326,14 @@ export function roundForSp(totalSp: number): number {
 }
 export function perkCost(level: number): number {
   return level + 1; // 1, 2, 3 ... SP per level
+}
+/** Diurnal demand multiplier at a sim time — the internet has evenings. */
+export function diurnalMult(simTime: number): number {
+  return 1 + BAL.diurnalAmp * Math.sin((2 * Math.PI * simTime) / BAL.dayLengthSec - Math.PI / 2);
+}
+/** Data size where a database of this level stays comfortable / hits the disk. */
+export function ioComfortGb(level: number): number {
+  return BAL.ioComfortGb * Math.pow(level, BAL.ioComfortLevelPow);
 }
 /** Mastery tier (0-3) for a kind's lifetime served count. */
 export function masteryTier(served: number): number {

@@ -51,6 +51,7 @@ const SAVED_FIELDS = [
   'insuranceUsed',
   'featureLevel',
   'releaseReadyAt',
+  'dataGb',
 ] as const;
 
 interface SaveBlob {

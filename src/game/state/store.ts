@@ -73,6 +73,16 @@ export interface TickPatch {
   logs?: LogEntry[];
 }
 
+/** 1 Hz rolling history for the telemetry charts (engine-owned array refs). */
+export interface Telemetry {
+  t: number[]; // simTime stamps
+  served: number[];
+  dropped: number[];
+  p95: number[];
+  p99: number[];
+  budget: number[]; // error budget 0..1
+}
+
 export interface LiveState {
   gauges: Gauges;
   nodeStats: Record<string, NodeLive>;
@@ -82,6 +92,7 @@ export interface LiveState {
   dropPathEdges: string[]; // edges upstream of a dropping node (bottleneck breadcrumbs)
   slo: SloLive; // error budget — the reliability currency
   crisis: boolean; // active incident / drop storm → Incident Command bar
+  telemetry: Telemetry;
 }
 
 export interface GameStats {
@@ -123,6 +134,7 @@ const emptyLive = (): LiveState => ({
   dropPathEdges: [],
   slo: { target: 0.99, budget01: 1, burn: 0, frozen: false, windowSec: BAL.sloWindowSec },
   crisis: false,
+  telemetry: { t: [], served: [], dropped: [], p95: [], p99: [], budget: [] },
 });
 
 export const emptyStats = (): GameStats => ({
@@ -217,6 +229,9 @@ export interface GameStore {
   shedUntil: number; // emergency load-shed window (runtime, not saved)
   lastBadDeploy: { nodeId: string; at: number } | null; // rollback target (runtime)
 
+  // --- storage physics: accumulated data per database node (GB) ---
+  dataGb: Record<string, number>;
+
   // --- live (engine-written) ---
   live: LiveState;
   logs: LogEntry[];
@@ -303,6 +318,7 @@ export interface GameStore {
   commandSurge: () => void;
   commandShed: () => void;
   commandRollback: () => void;
+  setDataGb: (sizes: Record<string, number>) => void; // engine, 1 Hz
 
   // --- actions: ui ---
   setTool: (t: Tool) => void;
@@ -409,6 +425,7 @@ function freshRunState() {
     surgeUntil: 0,
     shedUntil: 0,
     lastBadDeploy: null as { nodeId: string; at: number } | null,
+    dataGb: {} as Record<string, number>,
   };
 }
 
@@ -1318,6 +1335,8 @@ export const useGame = create<GameStore>()((set, get) => ({
     s.pushHistory('↩', 'Rolled back a bad deploy');
     s.showLesson('incident-command');
   },
+
+  setDataGb: (sizes) => set({ dataGb: sizes }),
 
   // -------------------------------------------------------------------- ui --
   setTool: (t) => set({ tool: t, pendingBlueprint: t === 'stamp' ? get().pendingBlueprint : null }),

@@ -124,6 +124,15 @@ function LiveStats({ id, showHit }: { id: string; showHit: boolean }) {
             {live.replLagSec.toFixed(1)}s
           </span>
         )}
+        {live.dataGb >= 0 && live.diskGb > 0 && (
+          <span
+            style={{ color: live.dataGb / live.diskGb > 0.9 ? 'var(--bad)' : live.dataGb / live.diskGb > 0.6 ? 'var(--amber, #b57700)' : undefined }}
+            title="Data has gravity: served writes accumulate. Queries slow past the comfort point; a full disk refuses writes. Upgrade for headroom, or shard to spread the growth."
+          >
+            <span className="k">data</span>
+            {live.dataGb < 10 ? live.dataGb.toFixed(1) : Math.round(live.dataGb)}/{Math.round(live.diskGb)} GB
+          </span>
+        )}
       </div>
     </>
   );
