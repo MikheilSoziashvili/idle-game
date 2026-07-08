@@ -233,6 +233,48 @@ export const LESSONS: LessonDef[] = [
       "Every node of one kind just degraded at once — same registry, same provider, same bug. Redundancy math assumes failures are INDEPENDENT; correlated failures break the assumption: N copies of the same thing share the same fate. Real outages love this shape: a bad TLS cert in every pod, a cloud provider's managed-Redis incident, one poisoned container image. The hedge is diversity — of kind, of vendor, of version — which is exactly why 'boring' polyglot architectures survive.",
   },
   {
+    id: 'on-call',
+    title: 'The pager is a person',
+    tag: 'on-call',
+    body:
+      "An incident fired and a human answered — your on-call engineer just auto-mitigated while you were busy elsewhere. That's what on-call IS: a person whose evening absorbs the failure. Reaction time depends on seniority and fatigue, and fatigue is the real currency: every page spends some. Real rotations exist to spread that cost across a team — a pager that always rings the same person is an outage generator with extra steps.",
+  },
+  {
+    id: 'burnout',
+    title: 'The rotation you didn\'t build',
+    tag: 'burnout',
+    body:
+      "An engineer just hit their limit and went on leave — mid-quarter, unplanned, exactly when you needed them. Burnout isn't a personality flaw; it's an arithmetic outcome: pages × stress ÷ recovery time. And it compounds: a burned-out responder means slower mitigation, longer incidents, more pages for whoever's left. This is the bus-factor lesson with a human face — one of anything, including people, is a single point of failure.",
+  },
+  {
+    id: 'finops-unit',
+    title: 'Cost per request is the real bill',
+    tag: 'FinOps',
+    body:
+      "Your bill isn't '$4/s' — it's 'what does serving ONE request cost, and what does it earn?' Unit economics turn infrastructure from a cost center into an argument you can win: an idle box is infinite cost-per-request; a reserved instance serving steady traffic is the cheapest compute you'll ever own; spot handles the bursts. Real FinOps teams publish cost-per-request per service and let the numbers shame the waste.",
+  },
+  {
+    id: 'reserved-capacity',
+    title: 'Commitment is a discount',
+    tag: 'reserved capacity',
+    body:
+      "You just pre-paid for capacity you're confident you'll use — and the cloud rewarded the commitment with a lower rate. That's the whole reserved-instance trade: predictability for price. The portfolio real teams run: RESERVED for the steady floor you're sure of, ON-DEMAND for the wiggle, SPOT for the bursty and interruptible. Getting the floor estimate right is capacity planning; getting it wrong is paying list price for regret.",
+  },
+  {
+    id: 'tech-debt',
+    title: 'The loan you took without noticing',
+    tag: 'tech debt',
+    body:
+      "Every fast ship borrowed a little against the future, and the balance is now big enough to feel: deploys fail more, provisioning drags, and eventually everything runs a little worse. Tech debt isn't a moral failing — it's leverage, and leverage has interest. The payments are refactor sprints: they produce zero features and buy back your velocity. Teams that never pay ship slower every quarter and call it 'growing pains'.",
+  },
+  {
+    id: 'staging-catch',
+    title: 'Prod is not the test environment',
+    tag: 'multi-env pipeline',
+    body:
+      "A bad build just died in staging — quietly, for free, before any user saw it. That's the entire argument for a promotion pipeline: dev proves it compiles, staging proves it survives contact with realistic traffic, prod proves nothing because by then it's too late to be a test. The canary is still your backstop for what staging misses (data-shape surprises, real-traffic weirdness) — layers, not either/or.",
+  },
+  {
     id: 'bot-flood',
     title: 'Traffic that pays nothing',
     tag: 'abuse',

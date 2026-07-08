@@ -408,6 +408,30 @@ export interface DrillState {
   activeUntil: number; // simTime; 0 = not running
 }
 
+// ---------------------------------------------------------------------------
+// The management layer: people, money, debt — infrastructure as a company.
+// ---------------------------------------------------------------------------
+
+/** A human on payroll. Infrastructure is a people system. */
+export interface Engineer {
+  id: string;
+  name: string;
+  role: 'sre' | 'dev';
+  level: 1 | 2 | 3; // junior / senior / staff
+  salary: number; // $/s — payroll is a real line item
+  fatigue: number; // 0..1; on-call during incidents burns people
+  onLeaveUntil: number; // simTime; burned-out engineers take leave
+  quirk: string; // one humanizing line
+}
+
+/** A release soaking in staging before it hits production. */
+export interface PendingRelease {
+  at: number; // simTime it promotes to prod
+  bad: boolean; // rolled at ship time; staging may catch it
+  v: number; // version number it will become
+  thin: boolean; // shipped on a thin error budget
+}
+
 /** Aggregate modifiers recomputed each tick from research/perks/singleton nodes. */
 export interface GlobalMods {
   capacityMult: number;

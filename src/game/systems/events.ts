@@ -39,7 +39,7 @@ export class EventSystem {
   spikeSurvivedFlag = false; // consumed by the engine for milestone/achievement
 
   update(
-    st: Pick<GameStore, 'simTime' | 'lifetimeRev' | 'regions' | 'nodes' | 'research' | 'sandbox' | 'live' | 'cash' | 'mandate'>,
+    st: Pick<GameStore, 'simTime' | 'lifetimeRev' | 'regions' | 'nodes' | 'research' | 'sandbox' | 'live' | 'cash' | 'mandate' | 'techDebt'>,
     logger: EventLogger,
     noRandom = false,
   ): EventEffects {
@@ -67,6 +67,7 @@ export class EventSystem {
       const thriving = uptime > BAL.pressureHighUptime && st.cash > BAL.pressureHighCash;
       let gapMult = struggling ? BAL.pressureEasyGapMult : thriving ? BAL.pressureHardGapMult : 1;
       if (st.mandate === 'blitzscale') gapMult *= 0.65;
+      if (st.techDebt >= BAL.debtBands[1]) gapMult *= BAL.debtEventGapMult; // rot invites trouble
       if (struggling && !this.easedOnce) {
         this.easedOnce = true;
         logger.log('info', 'the market senses weakness — and, mercifully, looks away for a while');

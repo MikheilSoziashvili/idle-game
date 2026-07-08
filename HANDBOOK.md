@@ -237,6 +237,15 @@ The SRE mechanic, made playable:
 - **The internet has evenings**: demand swings ±30% over an 8-minute day (☀/☾ chip in the dashboard). Plan for the peak. **Bot floods** add load that pays $0 — shed them at the gateway.
 - **Telemetry**: Company History (🕘) now opens with 5 minutes of charts — throughput, p95/p99, error budget — with hover inspection and a table view.
 
+### The management sim (phase 3)
+
+Infrastructure is a people-and-budget problem:
+
+- **The team (👥)**: hire SREs and devs from a rotating candidate pool (hire fee + real payroll per second; the team **survives funding rounds**). **SREs answer the pager** — when an incident fires, your on-call engineer auto-mitigates after a reaction delay set by seniority and fatigue: rep bleed −60%, faster healing, a line in the postmortem. Every response adds **fatigue**; at 100% they burn out and take leave — rotate the pager or staff up. **Devs** make releases faster and safer (code review) and are required for refactor sprints.
+- **Tech debt**: every release borrows (+2, +4 on a thin budget); big fleets rot without devs. Bands: 30+ deploys riskier & boots slower · 60+ capacity sags & incidents come sooner · 85+ deploy risk doubles. **Refactor sprints** (−25 debt, releases locked 90 s) pay the loan back — and **raising a round wipes debt entirely**: the rewrite is real.
+- **Cost Explorer (💸)**: total burn split into infra / payroll / bandwidth (egress), unit economics (cost & revenue per request, margin), and a top-spenders table that flags idle burn. **Reserve** steady nodes: pay 60 s of run cost up front for −35%/s forever — reserved for the floor, on-demand for the wiggle, spot for bursts.
+- **Multi-env Pipeline** (research): releases soak 8 s in staging where 60% of bad builds die quietly and free; the canary backstops the rest. Dev → staging → prod, like you mean it.
+
 ---
 
 ## 10. Products & funding rounds

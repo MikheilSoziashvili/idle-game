@@ -6,7 +6,8 @@ import { MANDATES } from '../../game/catalog/mandates';
 import { GLOSSARY, LESSONS } from '../../game/catalog/lessons';
 import { RESEARCH, researchDepth } from '../../game/catalog/research';
 import { TIERS } from '../../game/catalog/tiers';
-import { BAL, fmtMoney, fmtNum, pendingSp, perkCost } from '../../game/engine/balance';
+import { BAL, fmtMoney, fmtNum, levelOpCostMult, pendingSp, perkCost } from '../../game/engine/balance';
+import { specOf } from '../../game/catalog/nodes';
 import { roundIndex } from '../../game/engine/economy';
 import type { MandateId, PerkId, RunConstraint } from '../../game/engine/types';
 import { clearSave, exportCaseCode, exportSave, importCaseCode, importSave, saveNow } from '../../game/state/save';
@@ -81,6 +82,16 @@ export default function Modals() {
       {modal === 'caseeditor' && (
         <Shell title="Challenge editor — turn this canvas into a level" onClose={() => openModal(null)}>
           <CaseEditorPanel />
+        </Shell>
+      )}
+      {modal === 'team' && (
+        <Shell title="The team — infrastructure is a people system" onClose={() => openModal(null)}>
+          <TeamPanel />
+        </Shell>
+      )}
+      {modal === 'finops' && (
+        <Shell title="Cost Explorer — where the money actually goes" onClose={() => openModal(null)}>
+          <FinOpsPanel />
         </Shell>
       )}
       {confirm && (
@@ -1302,6 +1313,215 @@ function CaseEditorPanel() {
       {code && (
         <textarea readOnly value={code} rows={3} style={{ width: '100%', marginTop: 8 }} onFocus={(e) => e.target.select()} aria-label="Challenge code" />
       )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------- team --
+
+const LEVEL_NAMES = ['junior', 'senior', 'staff'];
+
+function TeamPanel() {
+  const s = useGame;
+  const team = useGame((st) => st.team);
+  const candidates = useGame((st) => st.candidates);
+  const onCallId = useGame((st) => st.onCallId);
+  const simTime = useGame((st) => st.simTime);
+  const cash = useGame((st) => st.cash);
+  const techDebt = useGame((st) => st.techDebt);
+  const releaseReadyAt = useGame((st) => st.releaseReadyAt);
+  const payroll = useGame((st) => st.live.payroll);
+  const responder = useGame((st) => st.live.responder);
+
+  const debtBand = techDebt >= BAL.debtBands[2] ? 3 : techDebt >= BAL.debtBands[1] ? 2 : techDebt >= BAL.debtBands[0] ? 1 : 0;
+  const hasDev = team.some((e) => e.role === 'dev' && e.onLeaveUntil <= simTime);
+
+  return (
+    <div>
+      <p style={{ margin: '0 0 12px', color: 'var(--dim)', fontSize: 12, lineHeight: 1.5 }}>
+        SREs answer the pager: when an incident fires, your on-call engineer auto-mitigates after a reaction delay —
+        seniority and fatigue both matter. Devs review code (releases get faster and safer) and run refactor sprints.
+        Everyone costs real payroll ({fmtMoney(payroll)}/s right now). The team survives funding rounds.
+      </p>
+
+      <h4 style={{ margin: '0 0 6px', fontSize: 11, color: 'var(--faint)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+        Roster {team.length}/{BAL.teamMax}
+      </h4>
+      {team.length === 0 && <p style={{ color: 'var(--faint)', fontSize: 12 }}>Nobody on payroll. The pager rings into the void.</p>}
+      {team.map((e) => {
+        const onLeave = e.onLeaveUntil > simTime;
+        return (
+          <div key={e.id} className={`eng-row ${onLeave ? 'on-leave' : ''}`}>
+            <span className={`eng-role ${e.role}`}>{e.role.toUpperCase()}</span>
+            <div className="eng-main">
+              <b>
+                {e.name} <small>· {LEVEL_NAMES[e.level - 1]} {'★'.repeat(e.level)}</small>
+                {responder === e.name && <span className="eng-badge live">📟 responding</span>}
+                {onLeave && <span className="eng-badge leave">on leave {Math.ceil(e.onLeaveUntil - simTime)}s</span>}
+              </b>
+              <small>{e.quirk} · ${e.salary.toFixed(2)}/s</small>
+              <div className="eng-fatigue" title={`fatigue ${Math.round(e.fatigue * 100)}% — burns out at 100%`}>
+                <i style={{ width: `${Math.round(e.fatigue * 100)}%`, background: e.fatigue > 0.7 ? 'var(--bad)' : e.fatigue > 0.4 ? 'var(--amber, #b8860b)' : 'var(--ok)' }} />
+              </div>
+            </div>
+            {e.role === 'sre' && (
+              <label className="eng-oncall" title="Carries the pager">
+                <input type="radio" name="oncall" checked={onCallId === e.id} onChange={() => s.getState().setOnCall(e.id)} />
+                on call
+              </label>
+            )}
+            <button className="ghost" title={`Fire (severance $${Math.round(e.salary * BAL.severanceSec)})`} onClick={() => s.getState().fireEngineer(e.id)}>
+              ✕
+            </button>
+          </div>
+        );
+      })}
+
+      <h4 style={{ margin: '16px 0 6px', fontSize: 11, color: 'var(--faint)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+        Candidates <small style={{ textTransform: 'none', letterSpacing: 0 }}>(hire fee ${BAL.hireFee})</small>
+      </h4>
+      {candidates.length === 0 && <p style={{ color: 'var(--faint)', fontSize: 12 }}>The recruiter is sourcing — check back shortly.</p>}
+      {candidates.map((c) => (
+        <div key={c.id} className="eng-row">
+          <span className={`eng-role ${c.role}`}>{c.role.toUpperCase()}</span>
+          <div className="eng-main">
+            <b>
+              {c.name} <small>· {LEVEL_NAMES[c.level - 1]} {'★'.repeat(c.level)}</small>
+            </b>
+            <small>{c.quirk} · ${c.salary.toFixed(2)}/s</small>
+          </div>
+          <button className="primary" disabled={cash < BAL.hireFee || team.length >= BAL.teamMax} onClick={() => s.getState().hireEngineer(c.id)}>
+            Hire
+          </button>
+        </div>
+      ))}
+
+      <h4 style={{ margin: '16px 0 6px', fontSize: 11, color: 'var(--faint)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+        Tech debt
+      </h4>
+      <div className="debt-meter" title="Shipping fast borrows; big fleets rot. Debt raises deploy risk, drags boots, then drags capacity.">
+        <i
+          style={{
+            width: `${Math.round(techDebt)}%`,
+            background: debtBand >= 2 ? 'var(--bad)' : debtBand >= 1 ? 'var(--amber, #b8860b)' : 'var(--ok)',
+          }}
+        />
+        <span className="mono">{Math.round(techDebt)}/100</span>
+      </div>
+      <p style={{ margin: '6px 0 8px', fontSize: 11.5, color: 'var(--dim)' }}>
+        {debtBand === 0 && 'Clean enough. Every release adds a little; devs slow the rot.'}
+        {debtBand === 1 && `Deploys are ${Math.round((BAL.debtDeployRiskMult - 1) * 100)}% riskier and provisioning drags. Pay it down.`}
+        {debtBand === 2 && 'Capacity is sagging and incidents come sooner. The interest is due.'}
+        {debtBand === 3 && 'Critical: deploy risk doubled, capacity −10%. The rewrite is calling.'}
+      </p>
+      <button
+        className={techDebt >= 30 && hasDev ? 'primary' : ''}
+        disabled={techDebt < 10 || !hasDev}
+        onClick={() => s.getState().refactorSprint()}
+        title={!hasDev ? 'Needs at least one dev, awake' : `−${BAL.refactorDebtCut} debt · no releases for ${BAL.refactorLockSec}s`}
+      >
+        Refactor sprint · −{BAL.refactorDebtCut} debt, releases locked {BAL.refactorLockSec}s
+      </button>
+      {releaseReadyAt > simTime && (
+        <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--faint)', fontFamily: 'var(--mono)' }}>
+          releases locked {Math.ceil(releaseReadyAt - simTime)}s
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ----------------------------------------------------------------- finops --
+
+function FinOpsPanel() {
+  const s = useGame;
+  const nodes = useGame((st) => st.nodes);
+  const nodeStats = useGame((st) => st.live.nodeStats);
+  const gauges = useGame((st) => st.live.gauges);
+  const payroll = useGame((st) => st.live.payroll);
+  const egress = useGame((st) => st.live.egress);
+  const reservedIds = useGame((st) => st.reservedIds);
+  const sandbox = useGame((st) => st.sandbox);
+  const cash = useGame((st) => st.cash);
+
+  const rows = nodes
+    .map((n) => {
+      const live = nodeStats[n.id];
+      const spec = specOf(n.kind, n.zone?.template);
+      return { n, spec, cost: live?.costRate ?? 0, served: live?.served ?? 0, util: live?.util ?? 0 };
+    })
+    .filter((r) => r.cost > 0.001)
+    .sort((a, b) => b.cost - a.cost)
+    .slice(0, 10);
+
+  const perReqCost = gauges.served > 0.5 ? gauges.costPerSec / gauges.served : 0;
+  const perReqRev = gauges.served > 0.5 ? gauges.revenuePerSec / gauges.served : 0;
+
+  return (
+    <div>
+      <div className="hist-stats" style={{ marginBottom: 14 }}>
+        <div className="hist-stat"><b className="mono">{fmtMoney(gauges.costPerSec)}/s</b><small>total burn</small></div>
+        <div className="hist-stat"><b className="mono">{fmtMoney(payroll)}/s</b><small>payroll</small></div>
+        <div className="hist-stat"><b className="mono">{fmtMoney(egress)}/s</b><small>bandwidth (egress)</small></div>
+        <div className="hist-stat"><b className="mono">{perReqCost > 0 ? `$${perReqCost.toFixed(4)}` : '—'}</b><small>cost / request</small></div>
+        <div className="hist-stat"><b className="mono">{perReqRev > 0 ? `$${perReqRev.toFixed(4)}` : '—'}</b><small>revenue / request</small></div>
+        <div className="hist-stat">
+          <b className="mono" style={{ color: perReqRev > perReqCost ? 'var(--ok)' : 'var(--bad)' }}>
+            {perReqRev > 0 ? `${Math.round(((perReqRev - perReqCost) / perReqRev) * 100)}%` : '—'}
+          </b>
+          <small>unit margin</small>
+        </div>
+      </div>
+
+      <h4 style={{ margin: '0 0 6px', fontSize: 11, color: 'var(--faint)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+        Top spenders <small style={{ textTransform: 'none', letterSpacing: 0 }}>— reserve steady nodes for −{Math.round(BAL.reservedDiscount * 100)}%</small>
+      </h4>
+      <div style={{ overflowX: 'auto' }}>
+        <table className="finops-table">
+          <thead>
+            <tr>
+              <th style={{ textAlign: 'left' }}>node</th>
+              <th>$/s</th>
+              <th>util</th>
+              <th>$/1k req</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(({ n, spec, cost, served, util }) => {
+              const reserved = reservedIds.includes(n.id);
+              const upfront = Math.round(spec.opCost * levelOpCostMult(n.level) * (n.kind === 'zone' ? Math.max(1, n.zone?.instances ?? 1) : 1) * BAL.reservedUpfrontSec);
+              return (
+                <tr key={n.id} className={util < 0.05 ? 'idle-burn' : ''}>
+                  <td style={{ textAlign: 'left' }}>
+                    {n.label ?? (n.kind === 'zone' ? n.zone?.name : spec.name)}
+                    {util < 0.05 && <span className="idle-tag" title="Serving almost nothing — pure burn">idle</span>}
+                    {reserved && <span className="reserved-tag" title="Reserved pricing active">reserved</span>}
+                  </td>
+                  <td>{fmtMoney(cost)}</td>
+                  <td>{Math.round(util * 100)}%</td>
+                  <td>{served > 0.05 ? fmtMoney((cost / served) * 1000) : '∞'}</td>
+                  <td>
+                    {!reserved && spec.opCost > 0 && (
+                      <button
+                        disabled={!sandbox && cash < upfront}
+                        onClick={() => s.getState().reserveNode(n.id)}
+                        title={`Commit $${upfront} up front (${BAL.reservedUpfrontSec}s of run cost) → −${Math.round(BAL.reservedDiscount * 100)}%/s forever`}
+                      >
+                        reserve ${upfront}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p style={{ margin: '10px 0 0', fontSize: 11.5, color: 'var(--dim)', lineHeight: 1.5 }}>
+        The portfolio real teams run: <b>reserved</b> for the steady floor, <b>on-demand</b> for the wiggle, <b>spot</b> for
+        bursts. Idle boxes are infinite cost-per-request — power them off or give them traffic.
+      </p>
     </div>
   );
 }

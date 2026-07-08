@@ -22,6 +22,7 @@ export default function IncidentBar() {
   const commandSurge = useGame((s) => s.commandSurge);
   const commandShed = useGame((s) => s.commandShed);
   const commandRollback = useGame((s) => s.commandRollback);
+  const responder = useGame((s) => s.live.responder);
 
   if (!crisis) return null;
 
@@ -38,6 +39,7 @@ export default function IncidentBar() {
       <span className="ic-label">
         <b>INCIDENT</b> {label}
         {dropped > 0.3 && <em> · losing {dropped < 10 ? dropped.toFixed(1) : Math.round(dropped)} req/s</em>}
+        {responder && <span className="ic-responder"> · 📟 {responder} is on it</span>}
       </span>
       <span className="spacer" style={{ flex: 1 }} />
       <button

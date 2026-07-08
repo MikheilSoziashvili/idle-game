@@ -77,6 +77,9 @@ export default function Dashboard() {
   const releaseReadyAt = useGame((s) => s.releaseReadyAt);
   const shipRelease = useGame((s) => s.shipRelease);
   const hasCanary = useGame((s) => s.research.includes('canary'));
+  const pendingRelease = useGame((s) => s.pendingRelease);
+  const teamSize = useGame((s) => s.team.length);
+  const techDebt = useGame((s) => s.techDebt);
 
   const round = roundIndex(spTotal);
   const pending = pendingSp(lifetimeRev);
@@ -90,7 +93,8 @@ export default function Dashboard() {
   const drillAvailable = !sandbox && !caseId && !drillRunning && drill.lastDay !== today;
   const tutGauges = useGame((s) => s.tutorialStep === 3);
   const shipCooldown = Math.max(0, releaseReadyAt - simTime);
-  const shipReady = !sandbox && !caseId && shipCooldown <= 0 && !slo.frozen;
+  const shipReady = !sandbox && !caseId && shipCooldown <= 0 && !slo.frozen && !pendingRelease;
+  const stagingLeft = pendingRelease ? Math.max(0, Math.ceil(pendingRelease.at - simTime)) : 0;
 
   const gaugeWhy = (key: string) => (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -352,7 +356,30 @@ export default function Dashboard() {
                   : `Ship v1.${featureLevel + 1}: +$${BAL.releaseCash} + permanent demand growth. ${Math.round((slo.budget01 < BAL.releaseBudgetFloor ? BAL.releaseRiskLowBudget : BAL.releaseRisk) * 100)}% bad-deploy risk${hasCanary ? ' — canary catches it' : ' (research Progressive Delivery for canaries)'}${slo.budget01 < BAL.releaseBudgetFloor ? ' · RECKLESS: budget is thin' : ''}`
             }
           >
-            🚀{featureLevel > 0 ? `v1.${featureLevel}` : ' Ship'}
+            {pendingRelease ? `⇉ staging ${stagingLeft}s` : `🚀${featureLevel > 0 ? `v1.${featureLevel}` : ' Ship'}`}
+          </button>
+        )}
+        {!caseId && (
+          <button
+            onClick={() => openModal('team')}
+            title={teamSize > 0 ? `The team (${teamSize}): on-call, fatigue, refactors` : 'Hire engineers — SREs answer the pager, devs make shipping safer'}
+          >
+            👥{teamSize > 0 ? teamSize : ''}
+          </button>
+        )}
+        {!caseId && (
+          <button onClick={() => openModal('finops')} title="Cost Explorer: per-node burn, unit economics, reserved pricing" aria-label="Cost explorer">
+            💸
+          </button>
+        )}
+        {!sandbox && !caseId && techDebt >= BAL.debtBands[0] && (
+          <button
+            className="debt-chip-btn"
+            onClick={() => openModal('team')}
+            title={`Tech debt ${Math.round(techDebt)}/100 — deploys riskier, boots slower${techDebt >= BAL.debtBands[1] ? ', capacity sagging' : ''}. Run a refactor sprint.`}
+            style={{ color: techDebt >= BAL.debtBands[1] ? 'var(--bad)' : 'var(--amber, #b8860b)' }}
+          >
+            ⚠{Math.round(techDebt)}
           </button>
         )}
         <button

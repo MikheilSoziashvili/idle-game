@@ -18,7 +18,7 @@ import type {
   RegionRect,
 } from './types';
 import type { GameStats, GameStore, LiveState } from '../state/store';
-import { emptyStats } from '../state/store';
+import { emptyStats, rollCandidate } from '../state/store';
 import { EventSystem } from '../systems/events';
 import { AutoscalerSystem } from '../systems/automation';
 import { readyInstances, bootingInstances, zoneHasController } from '../systems/zoning';
@@ -203,6 +203,13 @@ export class Engine {
   // storage physics: accumulated data per DB node, flushed to the store at 1 Hz
   private dataGbMap = new Map<string, number>();
   private dataAdopted = false;
+
+  // the team: on-call response state
+  private respondAt = -1; // simTime the on-call engineer finishes reacting
+  private responderId: string | null = null;
+  private responderActive = false;
+  private fatigueBurstFor: string | null = null; // one-shot fatigue hit on response
+  private reservedSet = new Set<string>();
 
   // telemetry ring buffers (1 Hz, engine-owned refs shared with the store)
   private tele = { t: [] as number[], served: [] as number[], dropped: [] as number[], p95: [] as number[], p99: [] as number[], budget: [] as number[] };
@@ -415,6 +422,9 @@ export class Engine {
       this.dataGbMap = new Map(Object.entries(st.dataGb ?? {}));
       this.dataAdopted = true;
       this.tele = { t: [], served: [], dropped: [], p95: [], p99: [], budget: [] };
+      this.respondAt = -1;
+      this.responderId = null;
+      this.responderActive = false;
       this.adoptStats(st.stats);
       // node ids restart per run — never let a new run inherit old backlogs
       this.nodes = new Map();
@@ -459,6 +469,7 @@ export class Engine {
     const cmdShed = st.shedUntil > this.simTime;
     const hasBreakers = st.research.includes('breakers');
     const hasCoalescing = st.research.includes('coalescing');
+    this.reservedSet = new Set(st.reservedIds);
     const coldFloor = hasCoalescing ? BAL.coalescedColdFloor : BAL.cacheColdFloor;
     if (!this.dataAdopted) {
       // first tick of a fresh engine on a loaded save: adopt persisted data sizes
@@ -507,9 +518,12 @@ export class Engine {
         sn.wasBooting = booting;
       }
 
-      // healing: k8s-managed zones recover fast, everything else crawls back
+      // healing: k8s-managed zones recover fast, everything else crawls back —
+      // and an actively responding on-call engineer speeds everything up
       if (sn.health < 1) {
-        const heal = pn.kind === 'zone' && zoneHasController(st, sn.id, 'k8s') ? BAL.k8sHealPerSec : 0.02;
+        const heal =
+          (pn.kind === 'zone' && zoneHasController(st, sn.id, 'k8s') ? BAL.k8sHealPerSec : 0.02) +
+          (this.responderActive ? BAL.responderHealPerSec : 0);
         const wasSick = sn.health < 0.9;
         sn.health = Math.min(1, sn.health + heal * dt);
         if (wasSick && sn.health >= 0.9 && heal > 0.1) {
@@ -1148,6 +1162,10 @@ export class Engine {
     let costRate = 0;
     for (const sn of this.nodes.values()) costRate += sn.ui.costRate;
     costRate += perServeCosts / dt;
+    // FinOps: payroll and bandwidth are real line items
+    const payroll = st.team.reduce((a, e) => a + e.salary, 0);
+    const egress = servedRate * BAL.egressPerReq;
+    costRate += payroll + egress;
 
     // ---- money settlement ----
     let cash = st.cash;
@@ -1210,7 +1228,8 @@ export class Engine {
     const bleedMult = st.mandate === 'ironclad' ? 1.75 : 1; // reliability pledge: drops hurt more
     const repRate = repTarget > rep ? BAL.repHealRate : insured ? 0 : BAL.repBleedRate * bleedMult;
     rep += (repTarget - rep) * repRate * dt;
-    if (this.events.hasActiveIncident() && !insured) rep -= BAL.repIncidentDrain * bleedMult * dt;
+    if (this.events.hasActiveIncident() && !insured)
+      rep -= BAL.repIncidentDrain * bleedMult * (this.responderActive ? BAL.responderRepDrainMult : 1) * dt;
     // commanding an incident visibly earns back a little trust (postmortem bonus)
     if (this.pendingRepBonus !== 0) {
       rep += this.pendingRepBonus;
@@ -1229,10 +1248,43 @@ export class Engine {
       st.lastBadDeploy !== null &&
       this.simTime - st.lastBadDeploy.at < 90 &&
       (this.nodes.get(st.lastBadDeploy.nodeId)?.health ?? 1) < 0.9;
+    const crisisWas = this.crisis;
     this.crisis =
       !st.sandbox &&
       (this.events.hasActiveIncident() || badDeployLive || (this.crisisSince >= 0 && this.simTime - this.crisisSince > 3));
     if (this.crisis) this.sawCrisis = true;
+
+    // ---- on-call: the pager rings a person ----
+    if (this.crisis && !crisisWas) {
+      // rising edge: page the on-call SRE (or the least-fried available one)
+      const avail = st.team.filter((e) => e.role === 'sre' && e.onLeaveUntil <= this.simTime);
+      const eng = avail.find((e) => e.id === st.onCallId) ?? avail.sort((a, b) => a.fatigue - b.fatigue)[0];
+      if (eng) {
+        this.responderId = eng.id;
+        this.respondAt = this.simTime + BAL.reactionSecByLevel[eng.level - 1] * (1 + eng.fatigue);
+        this.log('warn', `📟 paging ${eng.name} (${eng.role.toUpperCase()} L${eng.level})…`);
+      } else {
+        this.responderId = null;
+        this.respondAt = -1;
+        if (st.team.some((e) => e.role === 'sre')) this.log('err', '📟 the pager rings — every SRE is burned out. Nobody answers.');
+      }
+    }
+    if (!this.crisis && crisisWas) {
+      this.responderId = null;
+      this.respondAt = -1;
+      this.responderActive = false;
+    }
+    if (this.crisis && !this.responderActive && this.responderId && this.respondAt >= 0 && this.simTime >= this.respondAt) {
+      this.responderActive = true;
+      const eng = st.team.find((e) => e.id === this.responderId);
+      if (eng) {
+        this.log('ok', `📟 ${eng.name} is on it — mitigating (heal boost, rep bleed −${Math.round((1 - BAL.responderRepDrainMult) * 100)}%)`);
+        this.fatigueBurstFor = eng.id;
+        st.grantAchievement('first-responder');
+        st.showLesson('on-call');
+        for (const w of this.pmWatch.values()) (w as { responded?: string }).responded = eng.name;
+      }
+    }
 
     // ---- company growth (logistic toward the round's scale cap) ----
     const round = roundIndex(st.spTotal);
@@ -1284,6 +1336,9 @@ export class Engine {
       }
       // flush accumulated data sizes so they persist in the save
       if (this.dataGbMap.size > 0) st.setDataGb(Object.fromEntries(this.dataGbMap));
+      this.updateTeam(st);
+      // staging → prod promotion
+      if (st.pendingRelease && this.simTime >= st.pendingRelease.at) st.promotePendingRelease();
       this.autoscaler.evaluate(
         this.store,
         (id) => this.nodes.get(id)?.utilSm ?? 0,
@@ -1360,6 +1415,9 @@ export class Engine {
       },
       crisis: this.crisis,
       telemetry: this.tele,
+      responder: this.responderActive ? (st.team.find((e) => e.id === this.responderId)?.name ?? null) : null,
+      payroll,
+      egress,
     };
     const statsCopy = { ...this.stats };
     this.lastPushedStats = statsCopy;
@@ -1434,6 +1492,66 @@ export class Engine {
       this.sloFrozen = false;
       this.log('ok', 'error budget recovering — release freeze lifted');
       st.addToast('ok', 'Release freeze lifted', `Budget back above ${Math.round(BAL.sloUnfreezeAt * 100)}%. Ship carefully.`);
+    }
+  }
+
+  /**
+   * The team, at 1 Hz: candidate pool rolls, fatigue flows, burnout bites,
+   * ambient tech debt accrues (devs slow it, refactors repay it).
+   */
+  private updateTeam(st: GameStore) {
+    let candidates = st.candidates;
+    let refreshAt: number | undefined;
+    if (this.simTime >= st.candidatesRefreshAt && !st.sandbox) {
+      candidates = Array.from({ length: BAL.candidateCount }, () => rollCandidate());
+      refreshAt = this.simTime + BAL.candidateRefreshSec;
+    }
+
+    let teamChanged = false;
+    const team = st.team.map((e) => {
+      let fatigue = e.fatigue;
+      let onLeaveUntil = e.onLeaveUntil;
+      if (this.responderActive && e.id === this.responderId) {
+        fatigue = Math.min(1, fatigue + BAL.fatiguePerCrisisSec + (this.fatigueBurstFor === e.id ? BAL.fatiguePerResponse : 0));
+        this.fatigueBurstFor = null;
+      } else {
+        fatigue = Math.max(0, fatigue - BAL.fatigueDecayPerSec);
+      }
+      if (fatigue >= 1 && onLeaveUntil <= this.simTime) {
+        onLeaveUntil = this.simTime + BAL.burnoutLeaveSec;
+        fatigue = BAL.burnoutReturnFatigue;
+        st.addToast('warn', `${e.name} burned out`, `On leave for ${BAL.burnoutLeaveSec}s. The pager did this. Rotate more people in.`);
+        st.pushHistory('🔥', `${e.name} burned out`);
+        st.showLesson('burnout');
+        if (this.responderId === e.id) {
+          this.responderId = null;
+          this.responderActive = false;
+        }
+      }
+      if (fatigue !== e.fatigue || onLeaveUntil !== e.onLeaveUntil) {
+        teamChanged = true;
+        return { ...e, fatigue, onLeaveUntil };
+      }
+      return e;
+    });
+
+    // ambient debt: big fleets rot; devs are the maintenance crew
+    let debt: number | undefined;
+    if (!st.sandbox && !st.caseId) {
+      const fleet = Math.max(0, st.nodes.length - BAL.debtFleetBaseline);
+      const devLevels = st.team.reduce((a, e) => a + (e.role === 'dev' && e.onLeaveUntil <= this.simTime ? e.level : 0), 0);
+      const delta = fleet * BAL.debtPerNodePerSec - devLevels * BAL.debtDevMaintPerSec;
+      if (delta !== 0) debt = Math.max(0, Math.min(100, st.techDebt + delta));
+      if ((debt ?? st.techDebt) >= BAL.debtBands[0]) st.showLesson('tech-debt');
+    }
+
+    if (teamChanged || refreshAt !== undefined || debt !== undefined) {
+      st.setTeamState({
+        team: teamChanged ? team : undefined,
+        candidates: refreshAt !== undefined ? candidates : undefined,
+        refreshAt,
+        techDebt: debt,
+      });
     }
   }
 
@@ -1551,6 +1669,8 @@ export class Engine {
         this.pendingRepBonus += BAL.cmdRepBonus;
         st.grantAchievement('commander');
       }
+      const responded = (w as { responded?: string }).responded;
+      if (responded) mitigations.push(`📟 ${responded} mitigated on-call`);
       const hasRedundancy = st.regions.some((r) => r.policies.redundancy);
       const hasK8s = st.nodes.some((n) => n.kind === 'k8s' && !n.disabled);
       const shedding = this.shedEma > 0.2 || st.regions.some((r) => r.policies.rateLimit) || st.nodes.some((n) => n.kind === 'apigw' && !n.disabled);
@@ -1725,7 +1845,8 @@ export class Engine {
       if (zoneHasController(st, pn.id, 'k8s')) zoneK8s = BAL.k8sZoneCostMult;
     }
     const idle = pn.disabled ? 0.15 : 1;
-    return spec.opCost * levelOpCostMult(pn.level) * instances * sn.regionCostMult * zoneK8s * mods.costMult * idle;
+    const reserved = this.reservedSet.has(pn.id) ? 1 - BAL.reservedDiscount : 1;
+    return spec.opCost * levelOpCostMult(pn.level) * instances * sn.regionCostMult * zoneK8s * mods.costMult * idle * reserved;
   }
 
   private hint(sn: SNode, text: string) {

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import {
   BAL,
+  levelOpCostMult,
   perkCost,
   roundForSp,
   totalSpentAtLevel,
@@ -12,6 +13,8 @@ import type {
   ContractInstance,
   DrillState,
   EdgeLive,
+  Engineer,
+  PendingRelease,
   Gauges,
   HistoryEntry,
   LogEntry,
@@ -93,6 +96,9 @@ export interface LiveState {
   slo: SloLive; // error budget — the reliability currency
   crisis: boolean; // active incident / drop storm → Incident Command bar
   telemetry: Telemetry;
+  responder: string | null; // on-call engineer actively mitigating (name)
+  payroll: number; // $/s in salaries
+  egress: number; // $/s in bandwidth
 }
 
 export interface GameStats {
@@ -135,6 +141,9 @@ const emptyLive = (): LiveState => ({
   slo: { target: 0.99, budget01: 1, burn: 0, frozen: false, windowSec: BAL.sloWindowSec },
   crisis: false,
   telemetry: { t: [], served: [], dropped: [], p95: [], p99: [], budget: [] },
+  responder: null,
+  payroll: 0,
+  egress: 0,
 });
 
 export const emptyStats = (): GameStats => ({
@@ -232,6 +241,15 @@ export interface GameStore {
   // --- storage physics: accumulated data per database node (GB) ---
   dataGb: Record<string, number>;
 
+  // --- the management sim: people, money, debt ---
+  team: Engineer[]; // survives prestige — the platform dies, the people don't
+  candidates: Engineer[]; // rotating hiring pool
+  candidatesRefreshAt: number;
+  onCallId: string | null; // who carries the pager
+  techDebt: number; // 0..100; shipping fast borrows, refactors repay
+  reservedIds: string[]; // nodes on reserved (committed) pricing
+  pendingRelease: PendingRelease | null; // a build soaking in staging
+
   // --- live (engine-written) ---
   live: LiveState;
   logs: LogEntry[];
@@ -243,7 +261,7 @@ export interface GameStore {
   selEdges: string[];
   speed: 0 | 1 | 2 | 4;
   dragKind: Exclude<NodeKind, 'zone'> | null; // palette item being dragged (what-if ghost)
-  modal: null | 'research' | 'prestige' | 'settings' | 'help' | 'tiers' | 'cases' | 'casedone' | 'doctor' | 'history' | 'caseeditor';
+  modal: null | 'research' | 'prestige' | 'settings' | 'help' | 'tiers' | 'cases' | 'casedone' | 'doctor' | 'history' | 'caseeditor' | 'team' | 'finops';
   confirm: ConfirmRequest | null;
   pendingBlueprint: string | null;
   pendingZoneTemplate: Exclude<NodeKind, 'zone'> | null;
@@ -319,6 +337,16 @@ export interface GameStore {
   commandShed: () => void;
   commandRollback: () => void;
   setDataGb: (sizes: Record<string, number>) => void; // engine, 1 Hz
+
+  // --- actions: management sim ---
+  hireEngineer: (id: string) => void;
+  fireEngineer: (id: string) => void;
+  setOnCall: (id: string) => void;
+  refactorSprint: () => void;
+  reserveNode: (id: string) => void;
+  setTeamState: (patch: { team?: Engineer[]; candidates?: Engineer[]; refreshAt?: number; techDebt?: number }) => void; // engine, 1 Hz
+  promotePendingRelease: () => void; // engine: staging soak finished
+  applyReleaseOutcome: (bad: boolean, thin: boolean, v: number) => void; // internal
 
   // --- actions: ui ---
   setTool: (t: Tool) => void;
@@ -426,6 +454,41 @@ function freshRunState() {
     shedUntil: 0,
     lastBadDeploy: null as { nodeId: string; at: number } | null,
     dataGb: {} as Record<string, number>,
+    // the rewrite pays off the debt — a real prestige benefit. People persist.
+    techDebt: 0,
+    reservedIds: [] as string[],
+    pendingRelease: null as PendingRelease | null,
+    candidatesRefreshAt: 0,
+  };
+}
+
+const ENG_NAMES = ['sam', 'rio', 'kai', 'noor', 'mira', 'juno', 'ada', 'lin', 'odin', 'zed', 'faye', 'remy', 'ida', 'bo', 'nova', 'cass'];
+const ENG_QUIRKS = [
+  'debugs by staring',
+  'keeps a rubber duck on-call too',
+  'has strong opinions about YAML',
+  'once rolled back prod from a beach',
+  'writes postmortems as haiku',
+  'refuses to deploy on Fridays',
+  'reads dashboards like tea leaves',
+  'maintains a personal grudge against DNS',
+  'says "it\'s always the network" — is right',
+  'documents everything, trusts nothing',
+];
+
+let engCounter = 1;
+/** Roll a hiring candidate. Seniority is rare; salaries scale with it. */
+export function rollCandidate(): Engineer {
+  const level = (Math.random() < 0.5 ? 1 : Math.random() < 0.75 ? 2 : 3) as 1 | 2 | 3;
+  return {
+    id: `eng${engCounter++}-${Math.floor(Math.random() * 1e6).toString(36)}`,
+    name: ENG_NAMES[Math.floor(Math.random() * ENG_NAMES.length)],
+    role: Math.random() < 0.5 ? 'sre' : 'dev',
+    level,
+    salary: BAL.salaryByLevel[level - 1],
+    fatigue: 0,
+    onLeaveUntil: 0,
+    quirk: ENG_QUIRKS[Math.floor(Math.random() * ENG_QUIRKS.length)],
   };
 }
 
@@ -454,6 +517,9 @@ export const useGame = create<GameStore>()((set, get) => ({
   caseObjectives: {},
   casesCompleted: [],
   customCases: [],
+  team: [],
+  candidates: [],
+  onCallId: null,
   drill: { streak: 0, lastDay: '', activeUntil: 0 },
   history: [],
   mandate: null,
@@ -572,6 +638,7 @@ export const useGame = create<GameStore>()((set, get) => ({
       edges: s.edges.filter((e) => !doomedIds.has(e.source) && !doomedIds.has(e.target)),
       cash: s.cash + refund,
       selection: s.selection.filter((id) => !doomedIds.has(id)),
+      reservedIds: s.reservedIds.filter((id) => !doomedIds.has(id)), // commitments die with the box
       graphVersion: s.graphVersion + 1,
     });
     if (refund > 0) s.addToast('info', 'Decommissioned', `Recovered $${refund} (${Math.round(BAL.refundRatio * 100)}% salvage).`);
@@ -1255,34 +1322,68 @@ export const useGame = create<GameStore>()((set, get) => ({
   shipRelease: () => {
     const s = get();
     if (s.sandbox || s.caseId) return;
-    if (s.simTime < s.releaseReadyAt) return;
+    if (s.simTime < s.releaseReadyAt || s.pendingRelease) return;
     if (s.live.slo.frozen) {
       s.addToast('warn', 'Release freeze', 'The error budget is spent. Restore reliability first — that is the deal.');
       return;
     }
     const lowBudget = s.live.slo.budget01 < BAL.releaseBudgetFloor;
-    const risk = lowBudget ? BAL.releaseRiskLowBudget : BAL.releaseRisk;
+    // devs review code; debt rots it
+    const devLevels = s.team.reduce((a, e) => a + (e.role === 'dev' && e.onLeaveUntil <= s.simTime ? e.level : 0), 0);
+    let risk: number = lowBudget ? BAL.releaseRiskLowBudget : BAL.releaseRisk;
+    if (s.techDebt >= BAL.debtBands[0]) risk *= BAL.debtDeployRiskMult;
+    if (s.techDebt >= BAL.debtBands[2]) risk *= 2;
+    risk = Math.max(BAL.releaseRiskFloor, Math.min(0.9, risk - BAL.devRiskCut * devLevels));
     const bad = Math.random() < risk;
-    const hasCanary = s.research.includes('canary');
+    const cooldown = BAL.releaseCooldownSec / (1 + BAL.devCooldownMult * devLevels);
     const v = s.featureLevel + 1;
 
+    if (s.research.includes('staging')) {
+      // the build soaks in staging first; most bad builds die there quietly
+      set({
+        releaseReadyAt: s.simTime + cooldown,
+        pendingRelease: { at: s.simTime + BAL.stagingSoakSec, bad, v, thin: lowBudget },
+      });
+      s.addToast('info', `v1.${v} in staging`, `Soaking ${BAL.stagingSoakSec}s before prod. Most bad builds die here.`);
+      return;
+    }
+    set({ releaseReadyAt: s.simTime + cooldown });
+    get().applyReleaseOutcome(bad, lowBudget, v);
+  },
+
+  promotePendingRelease: () => {
+    const s = get();
+    const pr = s.pendingRelease;
+    if (!pr) return;
+    set({ pendingRelease: null });
+    if (pr.bad && Math.random() < BAL.stagingCatchChance) {
+      s.addToast('ok', `Staging caught v1.${pr.v}`, 'The build died where builds are supposed to die. Free.');
+      s.pushHistory('⇉', `Staging blocked a bad build (v1.${pr.v})`);
+      s.showLesson('staging-catch');
+      return;
+    }
+    get().applyReleaseOutcome(pr.bad, pr.thin, pr.v);
+  },
+
+  applyReleaseOutcome: (bad, thin, v) => {
+    const s = get();
+    const hasCanary = s.research.includes('canary');
     if (bad && hasCanary) {
       // the canary catches it: no damage, small rollback fee, no feature shipped
-      set({ releaseReadyAt: s.simTime + BAL.releaseCooldownSec, cash: s.cash - BAL.canaryRollbackCost });
+      set({ cash: s.cash - BAL.canaryRollbackCost });
       s.addToast('ok', `Canary caught a bad build (v1.${v})`, `Rolled back at 5% traffic. −$${BAL.canaryRollbackCost}, nobody noticed.`);
       s.pushHistory('◐', `Canary blocked a bad deploy (v1.${v})`);
       return;
     }
-
-    // the feature ships either way — a bad deploy hurts a random serving node
+    // the feature ships either way — and shipping fast borrows against the future
     set({
       featureLevel: v,
-      releaseReadyAt: s.simTime + BAL.releaseCooldownSec,
       cash: s.cash + BAL.releaseCash,
+      techDebt: Math.min(100, s.techDebt + (thin ? BAL.debtPerThinRelease : BAL.debtPerRelease)),
     });
     s.completeMilestone('ship-it');
     s.showLesson('release-train');
-    if (s.featureLevel + 1 >= 10) s.grantAchievement('move-fast');
+    if (v >= 10) s.grantAchievement('move-fast');
     if (bad) {
       const victims = s.nodes.filter((n) => {
         const spec = specOf(n.kind, n.zone?.template);
@@ -1296,7 +1397,7 @@ export const useGame = create<GameStore>()((set, get) => ({
         s.pushHistory('💥', `Bad deploy: v1.${v}`);
       }
     } else {
-      s.addToast('ok', `Shipped v1.${v}`, `+$${BAL.releaseCash} launch bump · permanent demand +${(BAL.releaseDemandBonus * 100).toFixed(1)}%${lowBudget ? ' · shipped on a thin budget — risky' : ''}`);
+      s.addToast('ok', `Shipped v1.${v}`, `+$${BAL.releaseCash} launch bump · permanent demand +${(BAL.releaseDemandBonus * 100).toFixed(1)}%${thin ? ' · shipped on a thin budget — risky' : ''}`);
     }
   },
 
@@ -1337,6 +1438,100 @@ export const useGame = create<GameStore>()((set, get) => ({
   },
 
   setDataGb: (sizes) => set({ dataGb: sizes }),
+
+  // ------------------------------------------------------------ management sim --
+  hireEngineer: (id) => {
+    const s = get();
+    const cand = s.candidates.find((c) => c.id === id);
+    if (!cand) return;
+    if (s.team.length >= BAL.teamMax) {
+      s.addToast('warn', 'Team is full', `${BAL.teamMax} people is plenty of standups already.`);
+      return;
+    }
+    if (!s.sandbox && s.cash < BAL.hireFee) {
+      s.addToast('warn', 'Cannot afford the recruiter', `Hiring costs $${BAL.hireFee} up front, then salary.`);
+      return;
+    }
+    const team = [...s.team, cand];
+    set({
+      team,
+      candidates: s.candidates.filter((c) => c.id !== id),
+      cash: s.sandbox ? s.cash : s.cash - BAL.hireFee,
+      onCallId: s.onCallId ?? (cand.role === 'sre' ? cand.id : null),
+    });
+    s.addToast('ok', `Hired ${cand.name} (${cand.role.toUpperCase()} L${cand.level})`, `$${cand.salary.toFixed(2)}/s payroll · ${cand.quirk}.`);
+    s.pushHistory('👥', `Hired ${cand.name} — ${cand.role.toUpperCase()} L${cand.level}`);
+    if (team.length >= 4) s.grantAchievement('fully-staffed');
+  },
+
+  fireEngineer: (id) => {
+    const s = get();
+    const eng = s.team.find((e) => e.id === id);
+    if (!eng) return;
+    const severance = Math.round(eng.salary * BAL.severanceSec);
+    set({
+      team: s.team.filter((e) => e.id !== id),
+      cash: s.cash - severance,
+      onCallId: s.onCallId === id ? (s.team.find((e) => e.id !== id && e.role === 'sre')?.id ?? null) : s.onCallId,
+    });
+    s.addToast('info', `${eng.name} let go`, `Severance $${severance}. The pager remembers.`);
+  },
+
+  setOnCall: (id) => {
+    const s = get();
+    const eng = s.team.find((e) => e.id === id);
+    if (!eng || eng.role !== 'sre') return;
+    set({ onCallId: id });
+    s.addToast('info', `${eng.name} is on call`, 'Reaction time depends on seniority — and fatigue.');
+  },
+
+  refactorSprint: () => {
+    const s = get();
+    if (s.techDebt < 10) {
+      s.addToast('info', 'Not enough debt to refactor', 'Ship something first. It will come.');
+      return;
+    }
+    const hasDev = s.team.some((e) => e.role === 'dev' && e.onLeaveUntil <= s.simTime);
+    if (!hasDev) {
+      s.addToast('warn', 'No dev available', 'Refactor sprints need at least one dev on the team (and awake).');
+      return;
+    }
+    const before = s.techDebt;
+    const after = Math.max(0, before - BAL.refactorDebtCut);
+    set({
+      techDebt: after,
+      releaseReadyAt: Math.max(s.releaseReadyAt, s.simTime + BAL.refactorLockSec),
+    });
+    s.addToast('ok', `Refactor sprint: debt ${Math.round(before)} → ${Math.round(after)}`, `No releases for ${BAL.refactorLockSec}s — the team is paying the loan back.`);
+    s.pushHistory('🧾', `Refactor sprint (debt ${Math.round(before)} → ${Math.round(after)})`);
+    if (before >= 60 && after < 10) s.grantAchievement('debt-free');
+  },
+
+  reserveNode: (id) => {
+    const s = get();
+    const n = s.nodes.find((x) => x.id === id);
+    if (!n || s.reservedIds.includes(id)) return;
+    const spec = specOf(n.kind, n.zone?.template);
+    if (spec.opCost <= 0) return;
+    const upfront = Math.round(spec.opCost * levelOpCostMult(n.level) * (n.kind === 'zone' ? Math.max(1, n.zone?.instances ?? 1) : 1) * BAL.reservedUpfrontSec);
+    if (!s.sandbox && s.cash < upfront) {
+      s.addToast('warn', 'Cannot afford the commitment', `Reserving costs $${upfront} up front (${BAL.reservedUpfrontSec}s of its run cost).`);
+      return;
+    }
+    const reservedIds = [...s.reservedIds, id];
+    set({ cash: s.sandbox ? s.cash : s.cash - upfront, reservedIds });
+    s.addToast('ok', `Reserved: ${n.label ?? spec.name}`, `−${Math.round(BAL.reservedDiscount * 100)}% run cost, forever (well, until you bulldoze it).`);
+    s.showLesson('reserved-capacity');
+    if (reservedIds.length >= 5) s.grantAchievement('capacity-planner');
+  },
+
+  setTeamState: (patch) =>
+    set((s) => ({
+      team: patch.team ?? s.team,
+      candidates: patch.candidates ?? s.candidates,
+      candidatesRefreshAt: patch.refreshAt ?? s.candidatesRefreshAt,
+      techDebt: patch.techDebt ?? s.techDebt,
+    })),
 
   // -------------------------------------------------------------------- ui --
   setTool: (t) => set({ tool: t, pendingBlueprint: t === 'stamp' ? get().pendingBlueprint : null }),
@@ -1387,6 +1582,9 @@ export const useGame = create<GameStore>()((set, get) => ({
       achievements: s.achievements,
       blueprints: s.blueprints,
       customCases: s.customCases,
+      team: [],
+      candidates: [],
+      onCallId: null,
       cash: sandbox ? 1e12 : BAL.startCash,
       sandbox,
       research: sandbox ? ['containers', 'caching', 'gateway', 'autoscaling', 'queues', 'replicas', 'pooling', 'sharding', 'domains', 'breakers', 'canary', 'cdn', 'nosql', 'managed', 'orchestration', 'obs2', 'serverless', 'mesh', 'multiregion', 'mlpipe'] : [],

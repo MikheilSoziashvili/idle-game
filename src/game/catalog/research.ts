@@ -105,6 +105,15 @@ export const RESEARCH: ResearchDef[] = [
     grants: ['Ship-button bad deploys auto-roll back harmlessly (small rollback fee)'],
   },
   {
+    id: 'staging',
+    name: 'Multi-env Pipeline',
+    icon: '⇉',
+    desc: 'Dev → staging → prod. Every release soaks in staging first, where most bad builds die quietly — before they ever meet a user.',
+    cost: 100,
+    deps: ['canary'],
+    grants: ['Releases soak 8s in staging', '60% of bad builds caught free (canary still backstops the rest)'],
+  },
+  {
     id: 'domains',
     name: 'Domain Decomposition',
     icon: '⌘',

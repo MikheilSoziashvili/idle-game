@@ -25,6 +25,11 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   { id: 'move-fast', name: 'Move Fast, Fix Things', desc: 'Ship 10 releases in a single run.', icon: '🚀' },
   { id: 'commander', name: 'Incident Commander', desc: 'Resolve an incident after taking a command action.', icon: '☎' },
   { id: 'breaker-breaker', name: 'Breaker, Breaker', desc: 'A circuit breaker trips open — and the system holds.', icon: '⌁' },
+  // --- the management sim ---
+  { id: 'first-responder', name: 'First Responder', desc: 'An on-call engineer auto-mitigates an incident.', icon: '📟' },
+  { id: 'fully-staffed', name: 'Fully Staffed', desc: 'Four engineers on payroll at once.', icon: '👥' },
+  { id: 'capacity-planner', name: 'Capacity Planner', desc: 'Five nodes on reserved pricing.', icon: '📊' },
+  { id: 'debt-free', name: 'Paid In Full', desc: 'Refactor tech debt back below 10 from above 60.', icon: '🧾' },
   // --- live-ops ---
   { id: 'dealmaker', name: 'Dealmaker', desc: 'Complete 10 SLA contracts.', icon: '✍' },
   { id: 'fire-drill', name: 'Fire Marshal', desc: 'A 7-day chaos-drill streak.', icon: '🔥' },

@@ -274,6 +274,51 @@ export const BAL = {
   // --- telemetry -------------------------------------------------------------------------
   teleLen: 300, // 1 Hz history samples for the dashboard charts (5 min)
 
+  // --- the team: people are the platform ----------------------------------------------
+  teamMax: 6,
+  candidateCount: 3,
+  candidateRefreshSec: 240,
+  salaryByLevel: [0.06, 0.13, 0.25] as const, // $/s junior / senior / staff
+  hireFee: 120, // recruiter cut, one-time
+  severanceSec: 60, // firing pays this many seconds of salary
+  // on-call: reaction time before the SRE auto-mitigates a crisis
+  reactionSecByLevel: [12, 8, 5] as const,
+  responderRepDrainMult: 0.4, // incident rep drain while someone is on it
+  responderHealPerSec: 0.12, // extra health regen while responding
+  fatiguePerResponse: 0.2,
+  fatiguePerCrisisSec: 0.005, // while actively responding
+  fatigueDecayPerSec: 0.0025, // recovery when not responding
+  burnoutLeaveSec: 120,
+  burnoutReturnFatigue: 0.55,
+  // devs make shipping safer and faster
+  devCooldownMult: 0.12, // release cooldown ÷ (1 + this × Σdev levels)
+  devRiskCut: 0.02, // bad-deploy risk − this × Σdev levels (floored)
+  releaseRiskFloor: 0.08,
+
+  // --- FinOps ------------------------------------------------------------------------------
+  egressPerReq: 0.00008, // bandwidth bill per served user-facing request
+  reservedDiscount: 0.35, // reserved capacity: −35% opCost on that node…
+  reservedUpfrontSec: 60, // …after paying this many seconds of its opCost upfront
+
+  // --- tech debt ------------------------------------------------------------------------------
+  // Shipping fast cuts corners; big fleets rot without devs. Debt bites in bands.
+  debtPerRelease: 2,
+  debtPerThinRelease: 4,
+  debtFleetBaseline: 8, // nodes beyond this accrue ambient debt…
+  debtPerNodePerSec: 0.0009, // …at this rate each
+  debtDevMaintPerSec: 0.004, // Σdev levels × this reduces accrual
+  debtBands: [30, 60, 85] as const, // warning / heavy / critical
+  debtDeployRiskMult: 1.5, // band 1+: bad deploys likelier
+  debtBootMult: 1.2, // band 1+: provisioning drags
+  debtCapPenalty: 0.05, // band 2: all capacity −5% (band 3: −10%)
+  debtEventGapMult: 0.85, // band 2+: incidents come sooner
+  refactorDebtCut: 25,
+  refactorLockSec: 90, // no releases while the sprint runs
+
+  // --- staging pipeline --------------------------------------------------------------------------
+  stagingSoakSec: 8, // releases promote to prod after this
+  stagingCatchChance: 0.6, // bad builds that die in staging, free
+
   // --- first-failure insurance -----------------------------------------------------
   insuranceWindowSec: 30,
 

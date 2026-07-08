@@ -52,6 +52,14 @@ const SAVED_FIELDS = [
   'featureLevel',
   'releaseReadyAt',
   'dataGb',
+  // management sim
+  'team',
+  'candidates',
+  'candidatesRefreshAt',
+  'onCallId',
+  'techDebt',
+  'reservedIds',
+  'pendingRelease',
 ] as const;
 
 interface SaveBlob {

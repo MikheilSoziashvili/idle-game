@@ -93,9 +93,12 @@ export function computeMods(st: GameStore): GlobalMods {
   const hasGrafana = activeKinds.has('grafana');
   const mesh = st.research.includes('mesh');
   const obs2 = st.research.includes('obs2');
+  // tech debt bites in bands: heavy debt drags capacity, any debt drags boots
+  const debtCap = st.techDebt >= BAL.debtBands[2] ? 1 - BAL.debtCapPenalty * 2 : st.techDebt >= BAL.debtBands[1] ? 1 - BAL.debtCapPenalty : 1;
+  const debtBoot = st.techDebt >= BAL.debtBands[0] ? BAL.debtBootMult : 1;
   return {
     capacityMult:
-      (1 + BAL.perkThroughput * st.spSpentOn.throughput) * (mesh ? BAL.meshCapacityMult : 1),
+      (1 + BAL.perkThroughput * st.spSpentOn.throughput) * (mesh ? BAL.meshCapacityMult : 1) * debtCap,
     revenueMult:
       (1 + BAL.perkRevenue * st.spSpentOn.revenue) *
       (hasStripe ? BAL.stripeRevenueBonus : 1) *
@@ -104,7 +107,7 @@ export function computeMods(st: GameStore): GlobalMods {
       Math.max(0.3, 1 - BAL.perkEfficiency * st.spSpentOn.efficiency) *
       (st.mandate === 'shoestring' ? 0.85 : 1),
     rpMult: (hasGrafana ? BAL.grafanaRpMult : 1) * (obs2 ? BAL.obs2RpMult : 1),
-    bootTime: hasCicd ? BAL.bootTimeCicdSec : BAL.bootTimeSec,
+    bootTime: (hasCicd ? BAL.bootTimeCicdSec : BAL.bootTimeSec) * debtBoot,
     upgradeDiscount: hasCicd ? BAL.cicdUpgradeDiscount : 1,
     smartSplitAll: mesh,
     latencyMult: 1,
